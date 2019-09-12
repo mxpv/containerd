@@ -7,14 +7,26 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
     steps:
     - name: Set up Go 1.12
       uses: actions/setup-go@v1
       with:
         go-version: 1.12
       id: go
+
     - name: Check out code into the Go module directory
       uses: actions/checkout@v1
+      with:
+        fetch-depth: 1
+        path: go/src/github.com/containerd/containerd
+
+    - name: Check
+      run: make check
+      env:
+        GOPATH: go/src/github.com/containerd/containerd
+
     - name: Build
       run: make build
+      env:
+        GOPATH: go/src/github.com/containerd/containerd
