@@ -24,9 +24,9 @@ jobs:
     - name: Check
       run: make check
       env:
-        GOPATH: go/src/github.com/containerd/containerd
+        GOPATH: /home/runner/work/woodpecker/go
 
     - name: Build
       run: make build
       env:
-        GOPATH: go/src/github.com/containerd/containerd
+        GOPATH: /home/runner/work/woodpecker/go
