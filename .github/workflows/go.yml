@@ -27,10 +27,11 @@ jobs:
         GOPATH: /home/runner/work/woodpecker/go
 
     - name: Check
-      run: make check
+      run: |
+        export PATH=$PATH:$(go env GOPATH)/bin # See https://github.com/actions/setup-go/issues/14
+        make check
       env:
         GOPATH: /home/runner/work/woodpecker/go
-        PATH: /home/runner/work/woodpecker/go/bin
 
     - name: Build
       run: make build
