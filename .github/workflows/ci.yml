@@ -53,6 +53,6 @@ jobs:
           fetch-depth: 100
 
       - name: Project checks
-        uses: containerd/project
+        uses: containerd/project@54ed470364ab465df1b3b3239101e17ed4c680d1
         with:
           working-directory: src/github.com/containerd/containerd
