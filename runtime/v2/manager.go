@@ -46,7 +46,7 @@ type Config struct {
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.RuntimePluginV2,
+		Type: plugin.RuntimeShimPlugin,
 		ID:   "shim",
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
@@ -79,10 +79,10 @@ func init() {
 	})
 
 	plugin.Register(&plugin.Registration{
-		Type: plugin.RuntimePluginV2Service,
+		Type: plugin.RuntimePluginV2,
 		ID:   "task",
 		Requires: []plugin.Type{
-			plugin.RuntimePluginV2,
+			plugin.RuntimeShimPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			m, err := ic.Get(plugin.MetadataPlugin)
@@ -400,7 +400,7 @@ func NewTaskManager(shims *ShimManager) *TaskManager {
 
 // ID of the task manager
 func (m *TaskManager) ID() string {
-	return fmt.Sprintf("%s.%s", plugin.RuntimePluginV2Service, "task")
+	return fmt.Sprintf("%s.%s", plugin.RuntimeShimPlugin, "task")
 }
 
 // Create launches new shim instance and creates new task
