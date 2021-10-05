@@ -20,14 +20,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/events/exchange"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/metadata"
-	"github.com/containerd/containerd/mount"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/pkg/timeout"
 	"github.com/containerd/containerd/platforms"
@@ -46,7 +44,7 @@ type Config struct {
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.RuntimePluginV2,
+		Type: plugin.RuntimeShimPlugin,
 		ID:   "shim",
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
@@ -62,12 +60,7 @@ func init() {
 			}
 
 			ic.Meta.Platforms = supportedPlatforms
-			if err := os.MkdirAll(ic.Root, 0711); err != nil {
-				return nil, err
-			}
-			if err := os.MkdirAll(ic.State, 0711); err != nil {
-				return nil, err
-			}
+
 			m, err := ic.Get(plugin.MetadataPlugin)
 			if err != nil {
 				return nil, err
@@ -79,23 +72,57 @@ func init() {
 			cs := metadata.NewContainerStore(m.(*metadata.DB))
 			events := ep.(*exchange.Exchange)
 
-			return NewShimManager(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
-		},
-	})
-
-	plugin.Register(&plugin.Registration{
-		Type: plugin.RuntimePluginV2Service,
-		ID:   "task",
-		Requires: []plugin.Type{
-			plugin.RuntimePluginV2,
-		},
-		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			shimInstance, err := ic.GetByID(plugin.RuntimePluginV2, "shim")
+			manager, err := NewShimManager(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
 			if err != nil {
 				return nil, err
 			}
 
-			shimManager := shimInstance.(*ShimManager)
+			if err := loadExistingTasks(ic, manager.list, events, cs); err != nil {
+				return nil, err
+			}
+
+			return manager, nil
+		},
+	})
+
+	plugin.Register(&plugin.Registration{
+		Type: plugin.RuntimePluginV2,
+		ID:   "task",
+		Requires: []plugin.Type{
+			plugin.RuntimeShimPlugin,
+		},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			m, err := ic.Get(plugin.MetadataPlugin)
+			if err != nil {
+				return nil, err
+			}
+			ep, err := ic.GetByID(plugin.EventPlugin, "exchange")
+			if err != nil {
+				return nil, err
+			}
+			cs := metadata.NewContainerStore(m.(*metadata.DB))
+			events := ep.(*exchange.Exchange)
+
+			shimManager, err := NewShimManager(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
+			if err != nil {
+				return nil, err
+			}
+
+			if err := loadExistingTasks(ic, shimManager.list, events, cs); err != nil {
+				return nil, err
+			}
+
+			// Internally task manager relies on shim manager to launch task shims.
+			// It's also possible to use shim manager independently and launch other types of shims.
+			//
+			// Ideally task manager should depend on shim instance we registered above, however it'll use
+			// different home directory (`io.containerd.runtime.v2.task` vs `io.containerd.runtime.v2.shim`),
+			// which will break backward compatibility when upgrading containerd to the new version.
+			//
+			// For now, we create another instance of shim manager with the "old" home directory, so shim tasks
+			// are properly restored, but will work independently.
+			//
+			// See more context https://github.com/containerd/containerd/pull/5918#discussion_r705434412
 			return NewTaskManager(shimManager), nil
 		},
 	})
@@ -117,9 +144,7 @@ func NewShimManager(ctx context.Context, root, state, containerdAddress, contain
 		events:                 events,
 		containers:             cs,
 	}
-	if err := m.loadExistingTasks(ctx); err != nil {
-		return nil, err
-	}
+
 	return m, nil
 }
 
@@ -239,125 +264,6 @@ func (m *ShimManager) Delete(ctx context.Context, id string) error {
 	return err
 }
 
-func (m *ShimManager) loadExistingTasks(ctx context.Context) error {
-	nsDirs, err := os.ReadDir(m.state)
-	if err != nil {
-		return err
-	}
-	for _, nsd := range nsDirs {
-		if !nsd.IsDir() {
-			continue
-		}
-		ns := nsd.Name()
-		// skip hidden directories
-		if len(ns) > 0 && ns[0] == '.' {
-			continue
-		}
-		log.G(ctx).WithField("namespace", ns).Debug("loading tasks in namespace")
-		if err := m.loadShims(namespaces.WithNamespace(ctx, ns)); err != nil {
-			log.G(ctx).WithField("namespace", ns).WithError(err).Error("loading tasks in namespace")
-			continue
-		}
-		if err := m.cleanupWorkDirs(namespaces.WithNamespace(ctx, ns)); err != nil {
-			log.G(ctx).WithField("namespace", ns).WithError(err).Error("cleanup working directory in namespace")
-			continue
-		}
-	}
-	return nil
-}
-
-func (m *ShimManager) loadShims(ctx context.Context) error {
-	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
-	shimDirs, err := os.ReadDir(filepath.Join(m.state, ns))
-	if err != nil {
-		return err
-	}
-	for _, sd := range shimDirs {
-		if !sd.IsDir() {
-			continue
-		}
-		id := sd.Name()
-		// skip hidden directories
-		if len(id) > 0 && id[0] == '.' {
-			continue
-		}
-		bundle, err := LoadBundle(ctx, m.state, id)
-		if err != nil {
-			// fine to return error here, it is a programmer error if the context
-			// does not have a namespace
-			return err
-		}
-		// fast path
-		bf, err := os.ReadDir(bundle.Path)
-		if err != nil {
-			bundle.Delete()
-			log.G(ctx).WithError(err).Errorf("fast path read bundle path for %s", bundle.Path)
-			continue
-		}
-		if len(bf) == 0 {
-			bundle.Delete()
-			continue
-		}
-		container, err := m.container(ctx, id)
-		if err != nil {
-			log.G(ctx).WithError(err).Errorf("loading container %s", id)
-			if err := mount.UnmountAll(filepath.Join(bundle.Path, "rootfs"), 0); err != nil {
-				log.G(ctx).WithError(err).Errorf("forceful unmount of rootfs %s", id)
-			}
-			bundle.Delete()
-			continue
-		}
-		binaryCall := shimBinary(bundle, container.Runtime.Name, m.containerdAddress, m.containerdTTRPCAddress)
-		shim, err := loadShim(ctx, bundle, func() {
-			log.G(ctx).WithField("id", id).Info("shim disconnected")
-
-			cleanupAfterDeadShim(context.Background(), id, ns, m.list, m.events, binaryCall)
-			// Remove self from the runtime task list.
-			m.list.Delete(ctx, id)
-		})
-		if err != nil {
-			cleanupAfterDeadShim(ctx, id, ns, m.list, m.events, binaryCall)
-			continue
-		}
-		m.list.Add(ctx, shim)
-	}
-	return nil
-}
-
-func (m *ShimManager) container(ctx context.Context, id string) (*containers.Container, error) {
-	container, err := m.containers.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &container, nil
-}
-
-func (m *ShimManager) cleanupWorkDirs(ctx context.Context) error {
-	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
-	dirs, err := os.ReadDir(filepath.Join(m.root, ns))
-	if err != nil {
-		return err
-	}
-	for _, d := range dirs {
-		// if the task was not loaded, cleanup and empty working directory
-		// this can happen on a reboot where /run for the bundle state is cleaned up
-		// but that persistent working dir is left
-		if _, err := m.list.Get(ctx, d.Name()); err != nil {
-			path := filepath.Join(m.root, ns, d.Name())
-			if err := os.RemoveAll(path); err != nil {
-				log.G(ctx).WithError(err).Errorf("cleanup working dir %s", path)
-			}
-		}
-	}
-	return nil
-}
-
 func parsePlatforms(platformStr []string) ([]ocispec.Platform, error) {
 	p := make([]ocispec.Platform, len(platformStr))
 	for i, v := range platformStr {
@@ -384,7 +290,7 @@ func NewTaskManager(shims *ShimManager) *TaskManager {
 
 // ID of the task manager
 func (m *TaskManager) ID() string {
-	return fmt.Sprintf("%s.%s", plugin.RuntimePluginV2Service, "task")
+	return fmt.Sprintf("%s.%s", plugin.RuntimeShimPlugin, "task")
 }
 
 // Create launches new shim instance and creates new task
