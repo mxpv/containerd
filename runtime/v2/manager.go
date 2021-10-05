@@ -62,12 +62,7 @@ func init() {
 			}
 
 			ic.Meta.Platforms = supportedPlatforms
-			if err := os.MkdirAll(ic.Root, 0711); err != nil {
-				return nil, err
-			}
-			if err := os.MkdirAll(ic.State, 0711); err != nil {
-				return nil, err
-			}
+
 			m, err := ic.Get(plugin.MetadataPlugin)
 			if err != nil {
 				return nil, err
@@ -90,12 +85,33 @@ func init() {
 			plugin.RuntimePluginV2,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			shimInstance, err := ic.GetByID(plugin.RuntimePluginV2, "shim")
+			m, err := ic.Get(plugin.MetadataPlugin)
+			if err != nil {
+				return nil, err
+			}
+			ep, err := ic.GetByID(plugin.EventPlugin, "exchange")
+			if err != nil {
+				return nil, err
+			}
+			cs := metadata.NewContainerStore(m.(*metadata.DB))
+			events := ep.(*exchange.Exchange)
+
+			shimManager, err := NewShimManager(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
 			if err != nil {
 				return nil, err
 			}
 
-			shimManager := shimInstance.(*ShimManager)
+			// Internally task manager relies on shim manager to launch task shims.
+			// It's also possible to use shim manager independently and launch other types of shims.
+			//
+			// Ideally task manager should depend on shim instance we registered above, however it'll use
+			// different home directory (`io.containerd.runtime.v2.task` vs `io.containerd.runtime.v2.shim`),
+			// which will break backward compatibility when upgrading containerd to the new version.
+			//
+			// For now, we create another instance of shim manager with the "old" home directory, so shim tasks
+			// are properly restored.
+			//
+			// See more context https://github.com/containerd/containerd/pull/5918#discussion_r705434412
 			return NewTaskManager(shimManager), nil
 		},
 	})
