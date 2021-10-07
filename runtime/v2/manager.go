@@ -77,10 +77,6 @@ func init() {
 				return nil, err
 			}
 
-			if err := loadExistingTasks(ic, manager.list, events, cs); err != nil {
-				return nil, err
-			}
-
 			return manager, nil
 		},
 	})
@@ -90,6 +86,8 @@ func init() {
 		ID:   "task",
 		Requires: []plugin.Type{
 			plugin.RuntimeShimPlugin,
+			plugin.EventPlugin,
+			plugin.MetadataPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			m, err := ic.Get(plugin.MetadataPlugin)
@@ -108,7 +106,7 @@ func init() {
 				return nil, err
 			}
 
-			if err := loadExistingTasks(ic, shimManager.list, events, cs); err != nil {
+			if err := shimManager.loadExistingTasks(ic.Context); err != nil {
 				return nil, err
 			}
 
