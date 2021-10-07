@@ -20,6 +20,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
@@ -31,6 +35,7 @@ import (
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/runtime"
+	shim_binary "github.com/containerd/containerd/runtime/v2/shim"
 	"github.com/containerd/containerd/runtime/v2/task"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
@@ -158,6 +163,8 @@ type ShimManager struct {
 	list                   *runtime.TaskList
 	events                 *exchange.Exchange
 	containers             containers.Store
+	// runtimePaths is a cache of `runtime names` -> `resolved fs path`
+	runtimePaths sync.Map
 }
 
 // ID of the shim manager
@@ -212,7 +219,12 @@ func (m *ShimManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 		topts = opts.RuntimeOptions
 	}
 
-	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
+	runtimePath, err := m.resolveRuntimePath(opts.Runtime)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve runtime path: %w", err)
+	}
+
+	b := shimBinary(bundle, runtimePath, m.containerdAddress, m.containerdTTRPCAddress)
 	shim, err := b.Start(ctx, topts, func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
@@ -228,6 +240,79 @@ func (m *ShimManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	}
 
 	return shim, nil
+}
+
+func (m *ShimManager) resolveRuntimePath(runtime string) (string, error) {
+	if runtime == "" {
+		return "", fmt.Errorf("no runtime name")
+	}
+
+	// Custom path to runtime binary
+	if strings.Contains(runtime, "/") {
+		// Make sure it exists before returning ok
+		if _, err := os.Stat(runtime); err != nil {
+			return "", fmt.Errorf("invalid custom binary path: %w", err)
+		}
+
+		return runtime, nil
+	}
+
+	// Preserve existing logic and resolve runtime path from runtime name.
+
+	name := shim_binary.BinaryName(runtime)
+	if name == "" {
+		return "", fmt.Errorf("invalid runtime name %s, correct runtime name should format like io.containerd.runc.v1", runtime)
+	}
+
+	if path, ok := m.runtimePaths.Load(name); ok {
+		return path.(string), nil
+	}
+
+	var (
+		cmdPath string
+		lerr    error
+	)
+
+	binaryPath := shim_binary.BinaryPath(runtime)
+	if _, serr := os.Stat(binaryPath); serr == nil {
+		cmdPath = binaryPath
+	}
+
+	if cmdPath == "" {
+		if cmdPath, lerr = exec.LookPath(name); lerr != nil {
+			if eerr, ok := lerr.(*exec.Error); ok {
+				if eerr.Err == exec.ErrNotFound {
+					self, err := os.Executable()
+					if err != nil {
+						return "", err
+					}
+
+					// Match the calling binaries (containerd) path and see
+					// if they are side by side. If so, execute the shim
+					// found there.
+					testPath := filepath.Join(filepath.Dir(self), name)
+					if _, serr := os.Stat(testPath); serr == nil {
+						cmdPath = testPath
+					}
+					if cmdPath == "" {
+						return "", errors.Wrapf(os.ErrNotExist, "runtime %q binary not installed %q", runtime, name)
+					}
+				}
+			}
+		}
+	}
+
+	cmdPath, err := filepath.Abs(cmdPath)
+	if err != nil {
+		return "", err
+	}
+
+	if path, ok := m.runtimePaths.LoadOrStore(name, cmdPath); ok {
+		// We didn't store cmdPath we loaded an already cached value. Use it.
+		cmdPath = path.(string)
+	}
+
+	return cmdPath, nil
 }
 
 // cleanupShim attempts to properly delete and cleanup shim after error
