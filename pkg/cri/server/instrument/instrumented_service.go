@@ -14,7 +14,7 @@
    limitations under the License.
 */
 
-package server
+package instrument
 
 import (
 	"context"
@@ -28,21 +28,39 @@ import (
 	ctrdutil "github.com/containerd/containerd/pkg/cri/util"
 )
 
-// instrumentedService wraps service with containerd namespace and logs.
-type instrumentedService struct {
-	c *criService
+type Services interface {
+	runtime.RuntimeServiceServer
+	runtime.ImageServiceServer
 }
 
-func newInstrumentedService(c *criService) grpcServices {
+type AlphaServices interface {
+	runtime_alpha.RuntimeServiceServer
+	runtime_alpha.ImageServiceServer
+}
+
+type CRIServices interface {
+	runtime.RuntimeServiceServer
+	runtime.ImageServiceServer
+
+	AlphaVersion(ctx context.Context, r *runtime_alpha.VersionRequest) (*runtime_alpha.VersionResponse, error)
+	IsInitialized() bool
+}
+
+// instrumentedService wraps service with containerd namespace and logs.
+type instrumentedService struct {
+	c CRIServices
+}
+
+func NewInstrumentedService(c CRIServices) Services {
 	return &instrumentedService{c: c}
 }
 
 // instrumentedAlphaService wraps service with containerd namespace and logs.
 type instrumentedAlphaService struct {
-	c *criService
+	c CRIServices
 }
 
-func newInstrumentedAlphaService(c *criService) grpcAlphaServices {
+func NewInstrumentedAlphaService(c CRIServices) AlphaServices {
 	return &instrumentedAlphaService{c: c}
 }
 
@@ -51,7 +69,7 @@ func newInstrumentedAlphaService(c *criService) grpcAlphaServices {
 // initialized.
 // NOTE(random-liu): All following functions MUST check initialized at the beginning.
 func (in *instrumentedService) checkInitialized() error {
-	if in.c.initialized.IsSet() {
+	if in.c.IsInitialized() {
 		return nil
 	}
 	return errors.New("server is not initialized yet")
@@ -62,7 +80,7 @@ func (in *instrumentedService) checkInitialized() error {
 // initialized.
 // NOTE(random-liu): All following functions MUST check initialized at the beginning.
 func (in *instrumentedAlphaService) checkInitialized() error {
-	if in.c.initialized.IsSet() {
+	if in.c.IsInitialized() {
 		return nil
 	}
 	return errors.New("server is not initialized yet")
