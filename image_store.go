@@ -51,6 +51,10 @@ func (s *remoteImages) Get(ctx context.Context, name string) (images.Image, erro
 	return imageFromProto(resp.Image), nil
 }
 
+func (s *remoteImages) Lookup(ctx context.Context, ref string) (images.Image, error) {
+	return images.Image{}, errdefs.ErrNotImplemented
+}
+
 func (s *remoteImages) List(ctx context.Context, filters ...string) ([]images.Image, error) {
 	resp, err := s.client.List(ctx, &imagesapi.ListImagesRequest{
 		Filters: filters,

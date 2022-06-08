@@ -31,7 +31,7 @@ import (
 	"github.com/containerd/containerd/labels"
 	"github.com/containerd/containerd/metadata/boltutil"
 	"github.com/containerd/containerd/namespaces"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	bolt "go.etcd.io/bbolt"
 )
@@ -54,23 +54,56 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 	}
 
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getImagesBucket(tx, namespace)
-		if bkt == nil {
-			return fmt.Errorf("image %q: %w", name, errdefs.ErrNotFound)
-		}
-
-		ibkt := bkt.Bucket([]byte(name))
-		if ibkt == nil {
-			return fmt.Errorf("image %q: %w", name, errdefs.ErrNotFound)
-		}
-
-		image.Name = name
-		if err := readImage(&image, ibkt); err != nil {
-			return fmt.Errorf("image %q: %w", name, err)
-		}
-
-		return nil
+		return getImage(tx, namespace, name, &image)
 	}); err != nil {
+		return images.Image{}, err
+	}
+
+	return image, nil
+}
+
+func getImage(tx *bolt.Tx, namespace string, name string, image *images.Image) error {
+	bkt := getImagesBucket(tx, namespace)
+	if bkt == nil {
+		return fmt.Errorf("image %q: %w", name, errdefs.ErrNotFound)
+	}
+
+	ibkt := bkt.Bucket([]byte(name))
+	if ibkt == nil {
+		return fmt.Errorf("image %q: %w", name, errdefs.ErrNotFound)
+	}
+
+	image.Name = name
+	if err := readImage(image, ibkt); err != nil {
+		return fmt.Errorf("image %q: %w", name, err)
+	}
+
+	return nil
+}
+
+func (s *imageStore) Lookup(ctx context.Context, ref string) (images.Image, error) {
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return images.Image{}, err
+	}
+
+	var image images.Image
+	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
+		lookupBkt := getImageRefsBucket(tx, namespace)
+		if lookupBkt == nil {
+			return errdefs.ErrNotFound
+		}
+
+		imageName := lookupBkt.Get([]byte(ref))
+		if imageName == nil {
+			return errdefs.ErrNotFound
+		}
+
+		return getImage(tx, namespace, string(imageName), &image)
+	}); err != nil {
+		if errors.Is(err, errdefs.ErrNotFound) {
+			return s.Get(ctx, ref)
+		}
 		return images.Image{}, err
 	}
 
@@ -135,6 +168,10 @@ func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Ima
 			return err
 		}
 
+		if err := addRefsToLookup(tx, namespace, image.Name, image.References); err != nil {
+			return err
+		}
+
 		ibkt, err := bkt.CreateBucket([]byte(image.Name))
 		if err != nil {
 			if err != bolt.ErrBucketExists {
@@ -152,6 +189,73 @@ func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Ima
 	}
 
 	return image, nil
+}
+
+func addRefsToLookup(tx *bolt.Tx, namespace string, newImage string, references []string) error {
+	if len(references) == 0 {
+		// Nothing to update
+		return nil
+	}
+
+	lookupBkt, err := createImageRefsBucket(tx, namespace)
+	if err != nil {
+		return err
+	}
+
+	imagesBkt, err := createImagesBucket(tx, namespace)
+	if err != nil {
+		return err
+	}
+
+	// Write new references to lookup table.
+	// Update old image if a reference was already used.
+	for _, ref := range references {
+		if imageName := lookupBkt.Get([]byte(ref)); imageName != nil {
+			if err := deleteRefFromImage(imagesBkt, []byte(ref), imageName); err != nil {
+				return err
+			}
+		}
+
+		if err := lookupBkt.Put([]byte(ref), []byte(newImage)); err != nil {
+			return fmt.Errorf("failed to write ref %q to lookup table: %w", ref, err)
+		}
+	}
+
+	return nil
+}
+
+func deleteRefsFromLookup(tx *bolt.Tx, namespace string, refs []string) error {
+	lookupBkt := getImageRefsBucket(tx, namespace)
+	if lookupBkt == nil {
+		// No bucket, nothing to delete
+		return nil
+	}
+
+	for _, ref := range refs {
+		if err := lookupBkt.Delete([]byte(ref)); err != nil {
+			return fmt.Errorf("failed to delete ref %q from lookup: %w", ref, err)
+		}
+	}
+
+	return nil
+}
+
+func deleteRefFromImage(imagesBkt *bolt.Bucket, refToDelete []byte, imageName []byte) error {
+	imageBkt := imagesBkt.Bucket(imageName)
+	if imageBkt == nil {
+		return nil
+	}
+
+	refsBkt := imageBkt.Bucket(bucketKeyImageRefs)
+	if refsBkt == nil {
+		return nil
+	}
+
+	if err := refsBkt.Delete(refToDelete); err != nil {
+		return fmt.Errorf("failed to delete ref %q from image %q: %w", string(refToDelete), string(imageName), err)
+	}
+
+	return nil
 }
 
 func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths ...string) (images.Image, error) {
@@ -215,12 +319,30 @@ func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths 
 					updated.Target = image.Target
 				case "annotations":
 					updated.Target.Annotations = image.Target.Annotations
+				case "refs", "references":
+					if err := deleteRefsFromLookup(tx, namespace, updated.References); err != nil {
+						return err
+					}
+
+					updated.References = image.References
+
+					if err := addRefsToLookup(tx, namespace, updated.Name, updated.References); err != nil {
+						return err
+					}
 				default:
 					return fmt.Errorf("cannot update %q field on image %q: %w", path, image.Name, errdefs.ErrInvalidArgument)
 				}
 			}
 		} else {
+			if err := deleteRefsFromLookup(tx, namespace, updated.References); err != nil {
+				return err
+			}
+
 			updated = image
+
+			if err := addRefsToLookup(tx, namespace, updated.Name, updated.References); err != nil {
+				return err
+			}
 		}
 
 		if err := validateImage(&updated); err != nil {
@@ -248,6 +370,20 @@ func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.Del
 		bkt := getImagesBucket(tx, namespace)
 		if bkt == nil {
 			return fmt.Errorf("image %q: %w", name, errdefs.ErrNotFound)
+		}
+
+		var refs []string
+		if rbkt := bkt.Bucket(bucketKeyImageRefs); rbkt != nil {
+			if err := rbkt.ForEach(func(k, _ []byte) error {
+				refs = append(refs, string(k))
+				return nil
+			}); err != nil {
+				return fmt.Errorf("failed to retrieve image references: %w", err)
+			}
+		}
+
+		if err := deleteRefsFromLookup(tx, namespace, refs); err != nil {
+			return err
 		}
 
 		if err = bkt.DeleteBucket([]byte(name)); err != nil {
@@ -311,6 +447,15 @@ func readImage(image *images.Image, bkt *bolt.Bucket) error {
 		return err
 	}
 
+	if rbkt := bkt.Bucket(bucketKeyImageRefs); rbkt != nil {
+		if err := rbkt.ForEach(func(k, _ []byte) error {
+			image.References = append(image.References, string(k))
+			return nil
+		}); err != nil {
+			return fmt.Errorf("failed to read image references: %w", err)
+		}
+	}
+
 	tbkt := bkt.Bucket(bucketKeyTarget)
 	if tbkt == nil {
 		return errors.New("unable to read target bucket")
@@ -346,6 +491,19 @@ func writeImage(bkt *bolt.Bucket, image *images.Image) error {
 
 	if err := boltutil.WriteAnnotations(bkt, image.Target.Annotations); err != nil {
 		return fmt.Errorf("writing Annotations for image %v: %w", image.Name, err)
+	}
+
+	if len(image.References) > 0 {
+		rbkt, err := bkt.CreateBucketIfNotExists(bucketKeyImageRefs)
+		if err != nil {
+			return fmt.Errorf("failed to create image refs bucket: %w", err)
+		}
+
+		for _, ref := range image.References {
+			if err := rbkt.Put([]byte(ref), []byte{}); err != nil {
+				return fmt.Errorf("failed to put image ref %q: %w", ref, err)
+			}
+		}
 	}
 
 	// write the target bucket

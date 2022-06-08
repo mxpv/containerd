@@ -26,8 +26,10 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/filters"
 	"github.com/containerd/containerd/images"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestImagesList(t *testing.T) {
@@ -329,6 +331,41 @@ func TestImagesCreateUpdateDelete(t *testing.T) {
 			},
 		},
 		{
+			name:     "UpdateRefs",
+			original: imageBase(),
+			input: images.Image{
+				References: []string{"1", "2"},
+				Target: ocispec.Descriptor{ // Must be ignored
+					Size:      20,
+					MediaType: "application/vnd.oci.blab+ignored",
+					Annotations: map[string]string{
+						"foo": "baz",
+						"baz": "bunk",
+					},
+				},
+				Labels: map[string]string{ // Must be ignored
+					"foo": "baz",
+					"baz": "bunk",
+				},
+			},
+			fieldpaths: []string{"references"},
+			expected: images.Image{
+				Labels: map[string]string{
+					"foo": "bar",
+					"baz": "boo",
+				},
+				Target: ocispec.Descriptor{
+					Size:      10,
+					MediaType: "application/vnd.oci.blab",
+					Annotations: map[string]string{
+						"foo": "bar",
+						"baz": "boo",
+					},
+				},
+				References: []string{"1", "2"},
+			},
+		},
+		{
 			name:     "ReplaceAnnotation",
 			original: imageBase(),
 			input: images.Image{
@@ -544,6 +581,85 @@ func TestImagesCreateUpdateDelete(t *testing.T) {
 	}
 }
 
+func TestLookup(t *testing.T) {
+	ctx, db, cancel := testEnv(t)
+	defer cancel()
+	store := NewImageStore(NewDB(db, nil, nil))
+
+	image, err := store.Create(ctx, imageWithRefs())
+	require.NoError(t, err)
+
+	found, err := store.Lookup(ctx, "b")
+	assert.NoError(t, err)
+
+	checkImagesEqual(t, &image, &found, "ensure found right image")
+}
+
+func TestReplaceRef(t *testing.T) {
+	ctx, db, cancel := testEnv(t)
+	defer cancel()
+	store := NewImageStore(NewDB(db, nil, nil))
+
+	// Insert ImageA with refs A and B
+	imageA := imageWithRefs()
+	imageA.Name = "Image A"
+	imageA.References = []string{"a", "b"}
+	imageA, err := store.Create(ctx, imageA)
+	assert.NoError(t, err)
+
+	retA, err := store.Lookup(ctx, "a")
+	assert.NoError(t, err)
+	checkImagesEqual(t, &imageA, &retA, "should return image A")
+
+	// Insert ImageB with ref B (must be relinked from imageA)
+	imageB := imageWithRefs()
+	imageB.Name = "Image B"
+	imageB.References = []string{"b"}
+	imageB, err = store.Create(ctx, imageB)
+	assert.NoError(t, err)
+
+	retB, err := store.Lookup(ctx, "b")
+	assert.NoError(t, err)
+	assert.Equal(t, retB.References, []string{"b"})
+
+	retA, err = store.Lookup(ctx, "a")
+	assert.NoError(t, err)
+	assert.Equal(t, retA.References, []string{"a"})
+}
+
+func TestDeleteRef(t *testing.T) {
+	ctx, db, cancel := testEnv(t)
+	defer cancel()
+	store := NewImageStore(NewDB(db, nil, nil))
+
+	imageA := imageWithRefs()
+	imageA.Name = "Image A"
+	imageA.References = []string{"a"}
+	imageA, err := store.Create(ctx, imageA)
+	assert.NoError(t, err)
+
+	imageB := imageWithRefs()
+	imageB.Name = "Image B"
+	imageB.References = []string{"b"}
+	imageB, err = store.Create(ctx, imageB)
+	assert.NoError(t, err)
+
+	_, err = store.Lookup(ctx, "a")
+	assert.NoError(t, err)
+
+	_, err = store.Lookup(ctx, "b")
+	assert.NoError(t, err)
+
+	err = store.Delete(ctx, imageA.Name)
+	assert.NoError(t, err)
+
+	_, err = store.Lookup(ctx, "a")
+	assert.ErrorIs(t, err, errdefs.ErrNotFound)
+
+	_, err = store.Lookup(ctx, "b")
+	assert.NoError(t, err)
+}
+
 func imageBase() images.Image {
 	return images.Image{
 		Labels: map[string]string{
@@ -559,6 +675,15 @@ func imageBase() images.Image {
 			},
 		},
 	}
+}
+
+func imageWithRefs() images.Image {
+	image := imageBase()
+	image.Name = "test"
+	image.Target.Digest = digest.FromString(image.Name)
+	image.References = []string{"a", "b"}
+
+	return image
 }
 
 func checkImageTimestamps(t *testing.T, im *images.Image, now time.Time, oncreate bool) {

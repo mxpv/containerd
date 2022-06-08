@@ -27,7 +27,7 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/platforms"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -51,6 +51,11 @@ type Image struct {
 	// Target describes the root content for this image. Typically, this is
 	// a manifest, index or manifest list.
 	Target ocispec.Descriptor
+
+	// References are references to the image, e.g. RepoTag and RepoDigest.
+	// These allow quick image lookups.
+	// Order is not guaranteed.
+	References []string
 
 	CreatedAt, UpdatedAt time.Time
 }
@@ -83,6 +88,9 @@ type Store interface {
 	Update(ctx context.Context, image Image, fieldpaths ...string) (Image, error)
 
 	Delete(ctx context.Context, name string, opts ...DeleteOpt) error
+
+	// Lookup gets image by reference.
+	Lookup(ctx context.Context, ref string) (Image, error)
 }
 
 // TODO(stevvooe): Many of these functions make strong platform assumptions,

@@ -60,12 +60,16 @@
 //        │  ╘══*image name*
 //        │     ├──createdat : <binary time>     - Created at
 //        │     ├──updatedat : <binary time>     - Updated at
+//        │     ├──refs
+//        │     │	╘══*ref*: <string>			 - Image references
 //        │     ├──target
 //        │     │  ├──digest : <digest>          - Descriptor digest
 //        │     │  ├──mediatype : <string>       - Descriptor media type
 //        │     │  └──size : <varint>            - Descriptor size
 //        │     └──labels
 //        │        ╘══*key* : <string>           - Label value
+//        ├──image_refs
+//        │  ╘══*ref* : <string>                 - Image reference to image name lookup.
 //        ├──containers
 //        │  ╘══*container id*
 //        │     ├──createdat : <binary time>     - Created at
@@ -120,7 +124,7 @@
 package metadata
 
 import (
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -129,6 +133,7 @@ var (
 	bucketKeyDBVersion        = []byte("version")    // stores the version of the schema
 	bucketKeyObjectLabels     = []byte("labels")     // stores the labels for a namespace.
 	bucketKeyObjectImages     = []byte("images")     // stores image objects
+	bucketKeyObjectImageRefs  = []byte("image_refs") // stores image references
 	bucketKeyObjectContainers = []byte("containers") // stores container objects
 	bucketKeyObjectSnapshots  = []byte("snapshots")  // stores snapshot references
 	bucketKeyObjectContent    = []byte("content")    // stores content references
@@ -156,6 +161,7 @@ var (
 	bucketKeyRef         = []byte("ref")
 	bucketKeyExpireAt    = []byte("expireat")
 	bucketKeySandboxID   = []byte("sandboxid")
+	bucketKeyImageRefs   = []byte("refs") // Image references nested bucket
 
 	deprecatedBucketKeyObjectIngest = []byte("ingest") // stores ingest links, deprecated in v1.2
 )
@@ -210,12 +216,24 @@ func imagesBucketPath(namespace string) [][]byte {
 	return [][]byte{bucketKeyVersion, []byte(namespace), bucketKeyObjectImages}
 }
 
+func imageRefsBucketPath(namespace string) [][]byte {
+	return [][]byte{bucketKeyVersion, []byte(namespace), bucketKeyObjectImageRefs}
+}
+
 func createImagesBucket(tx *bolt.Tx, namespace string) (*bolt.Bucket, error) {
 	return createBucketIfNotExists(tx, imagesBucketPath(namespace)...)
 }
 
+func createImageRefsBucket(tx *bolt.Tx, namespace string) (*bolt.Bucket, error) {
+	return createBucketIfNotExists(tx, imageRefsBucketPath(namespace)...)
+}
+
 func getImagesBucket(tx *bolt.Tx, namespace string) *bolt.Bucket {
 	return getBucket(tx, imagesBucketPath(namespace)...)
+}
+
+func getImageRefsBucket(tx *bolt.Tx, namespace string) *bolt.Bucket {
+	return getBucket(tx, imageRefsBucketPath(namespace)...)
 }
 
 func createContainersBucket(tx *bolt.Tx, namespace string) (*bolt.Bucket, error) {
