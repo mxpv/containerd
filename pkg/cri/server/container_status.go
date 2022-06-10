@@ -42,21 +42,25 @@ func (c *criService) ContainerStatus(ctx context.Context, r *runtime.ContainerSt
 	// * ImageRef in container status is repo digest.
 	spec := container.Config.GetImage()
 	imageRef := container.ImageRef
-	image, err := c.imageStore.Get(imageRef)
+	image, err := c.getImage(ctx, imageRef)
 	if err != nil {
 		if !errdefs.IsNotFound(err) {
 			return nil, fmt.Errorf("failed to get image %q: %w", imageRef, err)
 		}
 	} else {
-		repoTags, repoDigests := parseImageReferences(image.References)
-		if len(repoTags) > 0 {
+		var (
+			labels     = image.Labels()
+			repoTag    = labels[imageLabelRepoTag]
+			repoDigest = labels[imageLabelRepoDigest]
+		)
+		if repoTag != "" {
 			// Based on current behavior of dockershim, this field should be
 			// image tag.
-			spec = &runtime.ImageSpec{Image: repoTags[0]}
+			spec = &runtime.ImageSpec{Image: repoTag}
 		}
-		if len(repoDigests) > 0 {
+		if repoDigest != "" {
 			// Based on the CRI definition, this field will be consumed by user.
-			imageRef = repoDigests[0]
+			imageRef = repoDigest
 		}
 	}
 	status := toCRIContainerStatus(container, spec, imageRef)

@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -26,13 +27,26 @@ import (
 // TODO(random-liu): Add image list filters after CRI defines this more clear, and kubelet
 // actually needs it.
 func (c *criService) ListImages(ctx context.Context, r *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
-	imagesInStore := c.imageStore.List()
+	list, err := c.client.ListImages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query image list from metadata store: %w", err)
+	}
 
 	var images []*runtime.Image
-	for _, image := range imagesInStore {
+	for _, image := range list {
+		spec, err := image.Spec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get image spec for image %q: %w", err)
+		}
+
+		image, err := toCRIImage(image, spec)
+		if err != nil {
+			return nil, err
+		}
+
 		// TODO(random-liu): [P0] Make sure corresponding snapshot exists. What if snapshot
 		// doesn't exist?
-		images = append(images, toCRIImage(image))
+		images = append(images, image)
 	}
 
 	return &runtime.ListImagesResponse{Images: images}, nil

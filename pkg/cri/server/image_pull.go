@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +37,7 @@ import (
 
 	"github.com/containerd/imgcrypt"
 	"github.com/containerd/imgcrypt/images/encryption"
+	imageidentity "github.com/opencontainers/image-spec/identity"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
@@ -166,36 +169,85 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		return nil, fmt.Errorf("failed to pull and unpack image %q: %w", ref, err)
 	}
 
-	configDesc, err := image.Config(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get image config descriptor: %w", err)
+	imageID, ok := image.Metadata().Labels[containerd.ImageLabelConfigDigest]
+	if !ok {
+		return nil, errors.New("failed to extract image ID from metadata")
 	}
-	imageID := configDesc.Digest.String()
 
 	repoDigest, repoTag := getRepoDigestAndTag(namedRef, image.Target().Digest, isSchema1)
-	for _, r := range []string{imageID, repoTag, repoDigest} {
-		if r == "" {
-			continue
-		}
-		if err := c.createImageReference(ctx, r, image.Target()); err != nil {
-			return nil, fmt.Errorf("failed to create image reference %q: %w", r, err)
-		}
-		// Update image store to reflect the newest state in containerd.
-		// No need to use `updateImage`, because the image reference must
-		// have been managed by the cri plugin.
-		if err := c.imageStore.Update(ctx, r); err != nil {
-			return nil, fmt.Errorf("failed to update image store %q: %w", r, err)
-		}
+
+	if err := c.ensureImageMetadata(ctx, repoDigest, repoTag, image); err != nil {
+		return nil, err
 	}
 
-	log.G(ctx).Debugf("Pulled image %q with image id %q, repo tag %q, repo digest %q", imageRef, imageID,
-		repoTag, repoDigest)
+	log.G(ctx).Debugf("Pulled image %q with image id %q, repo tag %q, repo digest %q", imageRef, imageID, repoTag, repoDigest)
 	// NOTE(random-liu): the actual state in containerd is the source of truth, even we maintain
 	// in-memory image store, it's only for in-memory indexing. The image could be removed
 	// by someone else anytime, before/during/after we create the metadata. We should always
 	// check the actual state in containerd before using the image or returning status of the
 	// image.
 	return &runtime.PullImageResponse{ImageRef: imageID}, nil
+}
+
+func (c *criService) ensureImageMetadata(ctx context.Context, repoDigest, repoTag string, image containerd.Image) error {
+	var (
+		metadata = image.Metadata()
+		update   = false
+	)
+
+	if _, ok := metadata.Labels[containerd.ImageLabelConfigDigest]; !ok {
+		imageConfig, err := image.Config(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get config descriptor: %w", err)
+		}
+
+		metadata.Labels[containerd.ImageLabelConfigDigest] = imageConfig.Digest.String()
+		update = true
+	}
+
+	if _, ok := metadata.Labels[imageLabelChainID]; !ok {
+		diffIDs, err := image.RootFS(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get diffids: %w", err)
+		}
+		chainID := imageidentity.ChainID(diffIDs)
+		metadata.Labels[imageLabelChainID] = chainID.String()
+
+		update = true
+	}
+
+	if _, ok := metadata.Labels[imageLabelSize]; !ok {
+		size, err := image.Size(ctx)
+		if err != nil {
+			return fmt.Errorf("get image compressed resource size: %w", err)
+		}
+
+		metadata.Labels[imageLabelSize] = strconv.FormatInt(size, 10)
+
+		update = true
+	}
+
+	if repoDigest != "" {
+		if _, ok := metadata.Labels[imageLabelRepoDigest]; !ok {
+			metadata.Labels[imageLabelRepoDigest] = repoDigest
+			update = true
+		}
+	}
+
+	if repoTag != "" {
+		if _, ok := metadata.Labels[imageLabelRepoTag]; !ok {
+			metadata.Labels[imageLabelRepoTag] = repoTag
+			update = true
+		}
+	}
+
+	if update {
+		if _, err := c.client.ImageService().Update(ctx, metadata, "labels"); err != nil {
+			return fmt.Errorf("failed to update image metadata with repo tag and digest: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ParseAuth parses AuthConfig and returns username and password/secret required by containerd.
@@ -260,41 +312,6 @@ func (c *criService) createImageReference(ctx context.Context, name string, desc
 	}
 	_, err = c.client.ImageService().Update(ctx, img, "target", "labels."+imageLabelKey)
 	return err
-}
-
-// updateImage updates image store to reflect the newest state of an image reference
-// in containerd. If the reference is not managed by the cri plugin, the function also
-// generates necessary metadata for the image and make it managed.
-func (c *criService) updateImage(ctx context.Context, r string) error {
-	img, err := c.client.GetImage(ctx, r)
-	if err != nil && !errdefs.IsNotFound(err) {
-		return fmt.Errorf("get image by reference: %w", err)
-	}
-	if err == nil && img.Labels()[imageLabelKey] != imageLabelValue {
-		// Make sure the image has the image id as its unique
-		// identifier that references the image in its lifetime.
-		configDesc, err := img.Config(ctx)
-		if err != nil {
-			return fmt.Errorf("get image id: %w", err)
-		}
-		id := configDesc.Digest.String()
-		if err := c.createImageReference(ctx, id, img.Target()); err != nil {
-			return fmt.Errorf("create image id reference %q: %w", id, err)
-		}
-		if err := c.imageStore.Update(ctx, id); err != nil {
-			return fmt.Errorf("update image store for %q: %w", id, err)
-		}
-		// The image id is ready, add the label to mark the image as managed.
-		if err := c.createImageReference(ctx, r, img.Target()); err != nil {
-			return fmt.Errorf("create managed label: %w", err)
-		}
-	}
-	// If the image is not found, we should continue updating the cache,
-	// so that the image can be removed from the cache.
-	if err := c.imageStore.Update(ctx, r); err != nil {
-		return fmt.Errorf("update image store for %q: %w", r, err)
-	}
-	return nil
 }
 
 // getTLSConfig returns a TLSConfig configured with a CA/Cert/Key specified by registryTLSConfig

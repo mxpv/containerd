@@ -27,7 +27,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
-	selinux "github.com/opencontainers/selinux/go-selinux"
+	"github.com/opencontainers/selinux/go-selinux"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/containerd/containerd"
@@ -95,13 +95,14 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 
 	// Prepare container image snapshot. For container, the image should have
 	// been pulled before creating the container, so do not ensure the image.
-	image, err := c.localResolve(config.GetImage().GetImage())
+	containerdImage, err := c.localResolve(ctx, config.GetImage().GetImage())
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve image %q: %w", config.GetImage().GetImage(), err)
 	}
-	containerdImage, err := c.toContainerdImage(ctx, image)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image from containerd %q: %w", image.ID, err)
+
+	imageID, ok := containerdImage.Labels()[containerd.ImageLabelConfigDigest]
+	if !ok { // Should never happen
+		return nil, fmt.Errorf("failed to extract id from image %q", config.GetImage().GetImage())
 	}
 
 	start := time.Now()
@@ -141,12 +142,17 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 		}
 	}()
 
+	imageSpec, err := containerdImage.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve image spec: %w", err)
+	}
+
 	var volumeMounts []*runtime.Mount
 	if !c.config.IgnoreImageDefinedVolumes {
 		// Create container image volumes mounts.
-		volumeMounts = c.volumeMounts(containerRootDir, config.GetMounts(), &image.ImageSpec.Config)
-	} else if len(image.ImageSpec.Config.Volumes) != 0 {
-		log.G(ctx).Debugf("Ignoring volumes defined in image %v because IgnoreImageDefinedVolumes is set", image.ID)
+		volumeMounts = c.volumeMounts(containerRootDir, config.GetMounts(), &imageSpec.Config)
+	} else if len(imageSpec.Config.Volumes) != 0 {
+		log.G(ctx).Debugf("Ignoring volumes defined in image %v because IgnoreImageDefinedVolumes is set", imageID)
 	}
 
 	// Generate container mounts.
@@ -159,7 +165,7 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 	log.G(ctx).Debugf("Use OCI runtime %+v for sandbox %q and container %q", ociRuntime, sandboxID, id)
 
 	spec, err := c.containerSpec(id, sandboxID, sandboxPid, sandbox.NetNSPath, containerName, containerdImage.Name(), config, sandboxConfig,
-		&image.ImageSpec.Config, append(mounts, volumeMounts...), ociRuntime)
+		&imageSpec.Config, append(mounts, volumeMounts...), ociRuntime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate container %q spec: %w", id, err)
 	}
@@ -202,8 +208,8 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 		}
 		opts = append(opts, customopts.WithVolumes(mountMap))
 	}
-	meta.ImageRef = image.ID
-	meta.StopSignal = image.ImageSpec.Config.StopSignal
+	meta.ImageRef = imageID
+	meta.StopSignal = imageSpec.Config.StopSignal
 
 	// Validate log paths and compose full container log path.
 	if sandboxConfig.GetLogDirectory() != "" && config.GetLogPath() != "" {
@@ -228,12 +234,12 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 		}
 	}()
 
-	specOpts, err := c.containerSpecOpts(config, &image.ImageSpec.Config)
+	specOpts, err := c.containerSpecOpts(config, &imageSpec.Config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container spec opts: %w", err)
 	}
 
-	containerLabels := buildLabels(config.Labels, image.ImageSpec.Config.Labels, containerKindContainer)
+	containerLabels := buildLabels(config.Labels, imageSpec.Config.Labels, containerKindContainer)
 
 	runtimeOptions, err := getRuntimeOptions(sandboxInfo)
 	if err != nil {

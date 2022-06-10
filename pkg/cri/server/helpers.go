@@ -21,16 +21,17 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/containerd/images"
 	clabels "github.com/containerd/containerd/labels"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
-	imagestore "github.com/containerd/containerd/pkg/cri/store/image"
 	sandboxstore "github.com/containerd/containerd/pkg/cri/store/sandbox"
 	runtimeoptions "github.com/containerd/containerd/pkg/runtimeoptions/v1"
 	"github.com/containerd/containerd/plugin"
@@ -81,6 +82,14 @@ const (
 	imageLabelKey = criContainerdPrefix + ".image"
 	// imageLabelValue is the label value indicating the image is managed by cri plugin.
 	imageLabelValue = "managed"
+	// imageLabelRepoTag is the label key for repo tag information
+	imageLabelRepoTag = criContainerdPrefix + ".image-repo-tag"
+	// imageLabelRepoDigest is the label key for repo digest information
+	imageLabelRepoDigest = criContainerdPrefix + ".image-repo-digest"
+	// imageLabelChainID is the label key for image's chain ID
+	imageLabelChainID = criContainerdPrefix + ".image-chain-id"
+	// imageLabelSize is the label key for image size information.
+	imageLabelSize = criContainerdPrefix + ".image-size"
 	// sandboxMetadataExtension is an extension name that identify metadata of sandbox in CreateContainerRequest
 	sandboxMetadataExtension = criContainerdPrefix + ".sandbox.metadata"
 	// containerMetadataExtension is an extension name that identify metadata of container in CreateContainerRequest
@@ -161,43 +170,110 @@ func getRepoDigestAndTag(namedRef docker.Named, digest imagedigest.Digest, schem
 	return repoDigest, repoTag
 }
 
-// localResolve resolves image reference locally and returns corresponding image metadata. It
-// returns store.ErrNotExist if the reference doesn't exist.
-func (c *criService) localResolve(refOrID string) (imagestore.Image, error) {
-	getImageID := func(refOrId string) string {
-		if _, err := imagedigest.Parse(refOrID); err == nil {
-			return refOrID
+var hexRegexp = regexp.MustCompile(`^[a-f\d]+$`)
+
+func buildFilters(refOrID string) []string {
+	const (
+		LabelEq       = `labels."%s"=="%s"`
+		LabelContains = `labels."%s"@="%s"`
+		NameContains  = `name@="%s"`
+	)
+
+	// This is a valid digest string
+	// Perform strong match by digest label
+	if _, err := imagedigest.Parse(refOrID); err == nil {
+		return []string{
+			fmt.Sprintf(LabelEq, containerd.ImageLabelConfigDigest, refOrID),
 		}
-		return func(ref string) string {
-			// ref is not image id, try to resolve it locally.
-			// TODO(random-liu): Handle this error better for debugging.
-			normalized, err := docker.ParseDockerRef(ref)
-			if err != nil {
-				return ""
-			}
-			id, err := c.imageStore.Resolve(normalized.String())
-			if err != nil {
-				return ""
-			}
-			return id
-		}(refOrID)
 	}
 
-	imageID := getImageID(refOrID)
-	if imageID == "" {
-		// Try to treat ref as imageID
-		imageID = refOrID
+	// Short ID lookup
+	if hexRegexp.MatchString(refOrID) {
+		return []string{
+			fmt.Sprintf(LabelContains, containerd.ImageLabelConfigDigest, refOrID),
+		}
 	}
-	return c.imageStore.Get(imageID)
+
+	// Look for by repo tag or digest
+	if normalized, err := docker.ParseDockerRef(refOrID); err == nil {
+		return []string{
+			fmt.Sprintf(LabelEq, imageLabelRepoTag, normalized),
+			fmt.Sprintf(LabelEq, imageLabelRepoDigest, normalized),
+		}
+	}
+
+	// Look by name
+	return []string{
+		fmt.Sprintf(NameContains, refOrID),
+	}
 }
 
-// toContainerdImage converts an image object in image store to containerd image handler.
-func (c *criService) toContainerdImage(ctx context.Context, image imagestore.Image) (containerd.Image, error) {
-	// image should always have at least one reference.
-	if len(image.References) == 0 {
-		return nil, fmt.Errorf("invalid image with no reference %q", image.ID)
+func (c *criService) findImage(ctx context.Context, refOrID string) (images.Image, error) {
+	var (
+		store   = c.client.ImageService()
+		filters = buildFilters(refOrID)
+	)
+
+	list, err := store.List(ctx, filters...)
+	if err != nil {
+		return images.Image{}, fmt.Errorf("failed to query image from metadata store: %w", err)
 	}
-	return c.client.GetImage(ctx, image.References[0])
+
+	if len(list) == 0 {
+		return images.Image{}, errdefs.ErrNotFound
+	}
+
+	if len(list) > 1 {
+		// Up to 1.7, CRI creates several image records (for each reference), which are essentially duplicates.
+		// Check if these are all same, and if so, just return the first one.
+		// This must be removed in 2.0
+		if first, ok := list[0].Labels[containerd.ImageLabelConfigDigest]; ok {
+			allSame := true
+			for _, img := range list[1:] {
+				digest, ok := img.Labels[containerd.ImageLabelConfigDigest]
+				if !ok || digest != first {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				return list[0], nil
+			}
+		}
+
+		return images.Image{}, fmt.Errorf("ambiguous image id, more then %d results found", len(list))
+	}
+
+	return list[0], nil
+}
+
+func (c *criService) getImage(ctx context.Context, refOrID string) (containerd.Image, error) {
+	metadata, err := c.findImage(ctx, refOrID)
+	if err != nil {
+		return nil, err
+	}
+
+	image, err := c.client.GetImage(ctx, metadata.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image: %w", err)
+	}
+
+	if err := c.ensureImageMetadata(ctx, "", "", image); err != nil {
+		return nil, err
+	}
+
+	return image, nil
+}
+
+// localResolve resolves image reference locally and returns corresponding image metadata. It
+// returns store.ErrNotExist if the reference doesn't exist.
+func (c *criService) localResolve(ctx context.Context, refOrID string) (containerd.Image, error) {
+	image, err := c.getImage(ctx, refOrID)
+	if err != nil {
+		return nil, err
+	}
+
+	return image, nil
 }
 
 // getUserFromImage gets uid or user name of the image user.
@@ -221,26 +297,27 @@ func getUserFromImage(user string) (*int64, string) {
 
 // ensureImageExists returns corresponding metadata of the image reference, if image is not
 // pulled yet, the function will pull the image.
-func (c *criService) ensureImageExists(ctx context.Context, ref string, config *runtime.PodSandboxConfig) (*imagestore.Image, error) {
-	image, err := c.localResolve(ref)
+func (c *criService) ensureImageExists(ctx context.Context, ref string, config *runtime.PodSandboxConfig) (containerd.Image, error) {
+	image, err := c.localResolve(ctx, ref)
 	if err != nil && !errdefs.IsNotFound(err) {
 		return nil, fmt.Errorf("failed to get image %q: %w", ref, err)
 	}
 	if err == nil {
-		return &image, nil
+		return image, nil
 	}
 	// Pull image to ensure the image exists
 	resp, err := c.PullImage(ctx, &runtime.PullImageRequest{Image: &runtime.ImageSpec{Image: ref}, SandboxConfig: config})
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull image %q: %w", ref, err)
 	}
+
 	imageID := resp.GetImageRef()
-	newImage, err := c.imageStore.Get(imageID)
+	newImage, err := c.localResolve(ctx, imageID)
 	if err != nil {
 		// It's still possible that someone removed the image right after it is pulled.
 		return nil, fmt.Errorf("failed to get image %q after pulling: %w", imageID, err)
 	}
-	return &newImage, nil
+	return newImage, nil
 }
 
 // validateTargetContainer checks that a container is a valid

@@ -20,11 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
+	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
-	imagestore "github.com/containerd/containerd/pkg/cri/store/image"
-
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -33,7 +33,7 @@ import (
 // TODO(random-liu): We should change CRI to distinguish image id and image spec. (See
 // kubernetes/kubernetes#46255)
 func (c *criService) ImageStatus(ctx context.Context, r *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
-	image, err := c.localResolve(r.GetImage().GetImage())
+	image, err := c.localResolve(ctx, r.GetImage().GetImage())
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			// return empty without error when image not found.
@@ -44,8 +44,19 @@ func (c *criService) ImageStatus(ctx context.Context, r *runtime.ImageStatusRequ
 	// TODO(random-liu): [P0] Make sure corresponding snapshot exists. What if snapshot
 	// doesn't exist?
 
-	runtimeImage := toCRIImage(image)
-	info, err := c.toCRIImageInfo(ctx, &image, r.GetVerbose())
+	imageSpec, err := image.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image spec for %q: %w", r.GetImage().GetImage(), err)
+	}
+
+	runtimeImage, err := toCRIImage(image, imageSpec)
+	if err != nil {
+		return nil, err
+	}
+
+	chainID := image.Labels()[imageLabelChainID]
+
+	info, err := c.toCRIImageInfo(ctx, chainID, imageSpec, r.GetVerbose())
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate image info: %w", err)
 	}
@@ -57,21 +68,35 @@ func (c *criService) ImageStatus(ctx context.Context, r *runtime.ImageStatusRequ
 }
 
 // toCRIImage converts internal image object to CRI runtime.Image.
-func toCRIImage(image imagestore.Image) *runtime.Image {
-	repoTags, repoDigests := parseImageReferences(image.References)
-	runtimeImage := &runtime.Image{
-		Id:          image.ID,
-		RepoTags:    repoTags,
-		RepoDigests: repoDigests,
-		Size_:       uint64(image.Size),
+func toCRIImage(image containerd.Image, imageSpec imagespec.Image) (*runtime.Image, error) {
+	var (
+		labels = image.Labels()
+
+		imageID    = labels[containerd.ImageLabelConfigDigest]
+		repoTags   = labels[imageLabelRepoTag]
+		repoDigest = labels[imageLabelRepoDigest]
+		imageSize  = labels[imageLabelSize]
+	)
+
+	size, err := strconv.ParseUint(imageSize, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse image size from str %q: %w", imageSize, err)
 	}
-	uid, username := getUserFromImage(image.ImageSpec.Config.User)
+
+	runtimeImage := &runtime.Image{
+		Id:          imageID,
+		RepoTags:    []string{repoTags},
+		RepoDigests: []string{repoDigest},
+		Size_:       size,
+	}
+
+	uid, username := getUserFromImage(imageSpec.Config.User)
 	if uid != nil {
 		runtimeImage.Uid = &runtime.Int64Value{Value: *uid}
 	}
 	runtimeImage.Username = username
 
-	return runtimeImage
+	return runtimeImage, nil
 }
 
 // TODO (mikebrow): discuss moving this struct and / or constants for info map for some or all of these fields to CRI
@@ -81,7 +106,7 @@ type verboseImageInfo struct {
 }
 
 // toCRIImageInfo converts internal image object information to CRI image status response info map.
-func (c *criService) toCRIImageInfo(ctx context.Context, image *imagestore.Image, verbose bool) (map[string]string, error) {
+func (c *criService) toCRIImageInfo(ctx context.Context, chainID string, imageSpec imagespec.Image, verbose bool) (map[string]string, error) {
 	if !verbose {
 		return nil, nil
 	}
@@ -89,8 +114,8 @@ func (c *criService) toCRIImageInfo(ctx context.Context, image *imagestore.Image
 	info := make(map[string]string)
 
 	imi := &verboseImageInfo{
-		ChainID:   image.ChainID,
-		ImageSpec: image.ImageSpec,
+		ChainID:   chainID,
+		ImageSpec: imageSpec,
 	}
 
 	m, err := json.Marshal(imi)
