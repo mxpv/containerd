@@ -32,6 +32,10 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// ImageLabelConfigDigest is a label added to image metadata during fetch which contains image descriptor digest.
+// This is needed by CRI to identify images by unique identifier.
+const ImageLabelConfigDigest = "containerd.io/image.config-digest"
+
 // Pull downloads the provided content into containerd's content store
 // and returns a platform specific image object
 func (c *Client) Pull(ctx context.Context, ref string, opts ...RemoteOpt) (_ Image, retErr error) {
@@ -246,11 +250,24 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		}
 	}
 
-	return images.Image{
+	img := images.Image{
 		Name:   name,
 		Target: desc,
 		Labels: rCtx.Labels,
-	}, nil
+	}
+
+	if img.Labels == nil {
+		img.Labels = map[string]string{}
+	}
+
+	config, err := img.Config(ctx, store, rCtx.PlatformMatcher)
+	if err != nil {
+		return images.Image{}, fmt.Errorf("failed to read image descriptor: %w", err)
+	}
+
+	img.Labels[ImageLabelConfigDigest] = config.Digest.String()
+
+	return img, nil
 }
 
 func (c *Client) createNewImage(ctx context.Context, img images.Image) (images.Image, error) {
