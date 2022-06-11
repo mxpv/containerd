@@ -21,7 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -168,14 +168,14 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		return nil, fmt.Errorf("failed to pull and unpack image %q: %w", ref, err)
 	}
 
-	imageID, ok := image.Metadata().Labels[containerd.ImageLabelConfigDigest]
-	if !ok {
-		return nil, errors.New("failed to extract image ID from metadata")
+	imageID, err := image.ID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image ID: %w", err)
 	}
 
 	repoDigest, repoTag := getRepoDigestAndTag(namedRef, image.Target().Digest, isSchema1)
 
-	if err := c.ensureImageMetadata(ctx, repoDigest, repoTag, image); err != nil {
+	if _, err := c.ensureImageMetadata(ctx, repoDigest, repoTag, image); err != nil {
 		return nil, err
 	}
 
@@ -188,16 +188,23 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 	return &runtime.PullImageResponse{ImageRef: imageID}, nil
 }
 
-func (c *criService) ensureImageMetadata(ctx context.Context, repoDigest, repoTag string, image containerd.Image) error {
+// ensureImageMetadata makes sure image labels contain all labels required by CRI layer (image id,
+// size, chain ID, repo tag, repo digest, etc). This is used by both pull code to populate image with
+// necessary information and well as at daemon start to update old images, so there no need in syncing.
+func (c *criService) ensureImageMetadata(ctx context.Context, repoDigest, repoTag string, image containerd.Image) (containerd.Image, error) {
 	var (
 		metadata = image.Metadata()
 		update   = false
 	)
 
+	if metadata.Labels == nil {
+		metadata.Labels = map[string]string{}
+	}
+
 	if _, ok := metadata.Labels[containerd.ImageLabelConfigDigest]; !ok {
 		imageConfig, err := image.Config(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get config descriptor: %w", err)
+			return nil, fmt.Errorf("failed to get config descriptor: %w", err)
 		}
 
 		metadata.Labels[containerd.ImageLabelConfigDigest] = imageConfig.Digest.String()
@@ -207,22 +214,36 @@ func (c *criService) ensureImageMetadata(ctx context.Context, repoDigest, repoTa
 	if _, ok := metadata.Labels[imageLabelChainID]; !ok {
 		diffIDs, err := image.RootFS(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get diffids: %w", err)
+			return nil, fmt.Errorf("failed to get diffids: %w", err)
 		}
+
 		chainID := imageidentity.ChainID(diffIDs)
 		metadata.Labels[imageLabelChainID] = chainID.String()
-
 		update = true
 	}
 
 	if _, ok := metadata.Labels[imageLabelSize]; !ok {
 		size, err := image.Size(ctx)
 		if err != nil {
-			return fmt.Errorf("get image compressed resource size: %w", err)
+			return nil, fmt.Errorf("get image compressed resource size: %w", err)
 		}
 
 		metadata.Labels[imageLabelSize] = strconv.FormatInt(size, 10)
+		update = true
+	}
 
+	if _, ok := metadata.Labels[imageLabelSpec]; !ok {
+		spec, err := image.Spec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read image spec: %w", err)
+		}
+
+		body, err := json.Marshal(&spec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal image spec to JSON: %w", err)
+		}
+
+		metadata.Labels[imageLabelSpec] = string(body)
 		update = true
 	}
 
@@ -242,11 +263,19 @@ func (c *criService) ensureImageMetadata(ctx context.Context, repoDigest, repoTa
 
 	if update {
 		if _, err := c.client.ImageService().Update(ctx, metadata, "labels"); err != nil {
-			return fmt.Errorf("failed to update image metadata with repo tag and digest: %w", err)
+			return nil, fmt.Errorf("failed to update image metadata with repo tag and digest: %w", err)
 		}
+
+		// Reload image with new metadata
+		image, err := c.client.GetImage(ctx, metadata.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get image from client: %w", err)
+		}
+
+		return image, nil
 	}
 
-	return nil
+	return image, nil
 }
 
 // ParseAuth parses AuthConfig and returns username and password/secret required by containerd.
@@ -287,30 +316,6 @@ func ParseAuth(auth *runtime.AuthConfig, host string) (string, string, error) {
 	// TODO(random-liu): Support RegistryToken.
 	// An empty auth config is valid for anonymous registry
 	return "", "", nil
-}
-
-// createImageReference creates image reference inside containerd image store.
-// Note that because create and update are not finished in one transaction, there could be race. E.g.
-// the image reference is deleted by someone else after create returns already exists, but before update
-// happens.
-func (c *criService) createImageReference(ctx context.Context, name string, desc imagespec.Descriptor) error {
-	img := containerdimages.Image{
-		Name:   name,
-		Target: desc,
-		// Add a label to indicate that the image is managed by the cri plugin.
-		Labels: map[string]string{imageLabelKey: imageLabelValue},
-	}
-	// TODO(random-liu): Figure out which is the more performant sequence create then update or
-	// update then create.
-	oldImg, err := c.client.ImageService().Create(ctx, img)
-	if err == nil || !errdefs.IsAlreadyExists(err) {
-		return err
-	}
-	if oldImg.Target.Digest == img.Target.Digest && oldImg.Labels[imageLabelKey] == imageLabelValue {
-		return nil
-	}
-	_, err = c.client.ImageService().Update(ctx, img, "target", "labels."+imageLabelKey)
-	return err
 }
 
 // getTLSConfig returns a TLSConfig configured with a CA/Cert/Key specified by registryTLSConfig

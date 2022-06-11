@@ -17,61 +17,60 @@
 package server
 
 import (
-	"context"
 	"testing"
 
-	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/metadata"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
-
-	imagestore "github.com/containerd/containerd/pkg/cri/store/image"
 )
 
 func TestListImages(t *testing.T) {
-	c := newTestCRIService()
-	imagesInStore := []imagestore.Image{
+	fakeTarget := ocispec.Descriptor{
+		MediaType: "test",
+		Digest:    "sha256:c75bebcdd211f41b3a460c7bf82970ed6c75acaab9cd4c9a4e125b03ca113799",
+		Size:      100000,
+	}
+
+	imagesInStore := []images.Image{
 		{
-			ID:      "sha256:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			ChainID: "test-chainid-1",
-			References: []string{
-				"gcr.io/library/busybox:latest",
-				"gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+			Name: "image-1",
+			Labels: map[string]string{
+				containerd.ImageLabelConfigDigest: "sha256:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				imageLabelChainID:                 "test-chainid-1",
+				imageLabelRepoTag:                 "gcr.io/library/busybox:latest",
+				imageLabelRepoDigest:              "gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+				imageLabelSize:                    "1000",
+				imageLabelSpec:                    `{"config":{"User":"root"}}`,
 			},
-			Size: 1000,
-			ImageSpec: imagespec.Image{
-				Config: imagespec.ImageConfig{
-					User: "root",
-				},
-			},
+			Target: fakeTarget,
 		},
 		{
-			ID:      "sha256:2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			ChainID: "test-chainid-2",
-			References: []string{
-				"gcr.io/library/alpine:latest",
-				"gcr.io/library/alpine@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+			Name: "image-2",
+			Labels: map[string]string{
+				containerd.ImageLabelConfigDigest: "sha256:2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				imageLabelChainID:                 "test-chainid-2",
+				imageLabelRepoTag:                 "gcr.io/library/alpine:latest",
+				imageLabelRepoDigest:              "gcr.io/library/alpine@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+				imageLabelSize:                    "2000",
+				imageLabelSpec:                    `{"config":{"User":"1234:1234"}}`,
 			},
-			Size: 2000,
-			ImageSpec: imagespec.Image{
-				Config: imagespec.ImageConfig{
-					User: "1234:1234",
-				},
-			},
+			Target: fakeTarget,
 		},
 		{
-			ID:      "sha256:3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			ChainID: "test-chainid-3",
-			References: []string{
-				"gcr.io/library/ubuntu:latest",
-				"gcr.io/library/ubuntu@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+			Name: "image-3",
+			Labels: map[string]string{
+				containerd.ImageLabelConfigDigest: "sha256:3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				imageLabelChainID:                 "test-chainid-3",
+				imageLabelRepoTag:                 "gcr.io/library/ubuntu:latest",
+				imageLabelRepoDigest:              "gcr.io/library/ubuntu@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+				imageLabelSize:                    "3000",
+				imageLabelSpec:                    `{"config":{"User":"nobody"}}`,
 			},
-			Size: 3000,
-			ImageSpec: imagespec.Image{
-				Config: imagespec.ImageConfig{
-					User: "nobody",
-				},
-			},
+			Target: fakeTarget,
 		},
 	}
 	expect := []*runtime.Image{
@@ -98,11 +97,18 @@ func TestListImages(t *testing.T) {
 		},
 	}
 
-	var err error
-	c.imageStore, err = imagestore.NewFakeStore(imagesInStore)
-	assert.NoError(t, err)
+	var (
+		ctx, db    = makeTestDB(t)
+		imageStore = metadata.NewImageStore(db)
+		c          = newTestCRIService(containerd.WithImageStore(imageStore))
+	)
 
-	resp, err := c.ListImages(context.Background(), &runtime.ListImagesRequest{})
+	for _, img := range imagesInStore {
+		_, err := imageStore.Create(ctx, img)
+		require.NoError(t, err)
+	}
+
+	resp, err := c.ListImages(ctx, &runtime.ListImagesRequest{})
 	assert.NoError(t, err)
 	require.NotNil(t, resp)
 	images := resp.GetImages()

@@ -21,6 +21,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/oci"
 	"github.com/containerd/go-cni"
 	"github.com/stretchr/testify/assert"
@@ -29,7 +30,6 @@ import (
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	servertesting "github.com/containerd/containerd/pkg/cri/server/testing"
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
-	imagestore "github.com/containerd/containerd/pkg/cri/store/image"
 	"github.com/containerd/containerd/pkg/cri/store/label"
 	sandboxstore "github.com/containerd/containerd/pkg/cri/store/sandbox"
 	snapshotstore "github.com/containerd/containerd/pkg/cri/store/snapshot"
@@ -48,8 +48,14 @@ const (
 )
 
 // newTestCRIService creates a fake criService for test.
-func newTestCRIService() *criService {
+func newTestCRIService(services ...containerd.ServicesOpt) *criService {
 	labels := label.NewStore()
+
+	client, err := containerd.New("", containerd.WithServices(services...))
+	if err != nil {
+		panic(err) // TODO: do t.Fail instead
+	}
+
 	return &criService{
 		config: criconfig.Config{
 			RootDir:  testRootDir,
@@ -62,7 +68,7 @@ func newTestCRIService() *criService {
 		imageFSPath:        testImageFSPath,
 		os:                 ostesting.NewFakeOS(),
 		sandboxStore:       sandboxstore.NewStore(labels),
-		imageStore:         imagestore.NewStore(nil),
+		client:             client,
 		snapshotStore:      snapshotstore.NewStore(),
 		sandboxNameIndex:   registrar.NewRegistrar(),
 		containerStore:     containerstore.NewStore(labels),

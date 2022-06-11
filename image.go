@@ -40,6 +40,9 @@ import (
 
 // Image describes an image used by containers
 type Image interface {
+	// ID returns a unique image identifier.
+	// Typically this is digest of image config descriptor.
+	ID(ctx context.Context) (string, error)
 	// Name of the image
 	Name() string
 	// Target descriptor for the image content
@@ -136,6 +139,38 @@ type image struct {
 
 	i        images.Image
 	platform platforms.MatchComparer
+}
+
+func (i *image) ID(ctx context.Context) (string, error) {
+	id, ok := i.i.Labels[ImageLabelConfigDigest]
+	if ok {
+		return id, nil
+	}
+
+	// If image was pulled before ID support implemented
+
+	config, err := i.Config(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to read image descriptor: %w", err)
+	}
+
+	var (
+		metadata = i.Metadata()
+		imageID  = config.Digest.String()
+	)
+
+	if metadata.Labels == nil {
+		metadata.Labels = map[string]string{}
+	}
+
+	metadata.Labels[ImageLabelConfigDigest] = imageID
+
+	i.i, err = i.client.ImageService().Update(ctx, metadata, "labels")
+	if err != nil {
+		return "", fmt.Errorf("failed to save labels: %w", err)
+	}
+
+	return imageID, nil
 }
 
 func (i *image) Metadata() images.Image {

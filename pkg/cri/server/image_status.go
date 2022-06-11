@@ -44,19 +44,12 @@ func (c *criService) ImageStatus(ctx context.Context, r *runtime.ImageStatusRequ
 	// TODO(random-liu): [P0] Make sure corresponding snapshot exists. What if snapshot
 	// doesn't exist?
 
-	imageSpec, err := image.Spec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image spec for %q: %w", r.GetImage().GetImage(), err)
-	}
-
-	runtimeImage, err := toCRIImage(image, imageSpec)
+	runtimeImage, err := c.toCRIImage(ctx, image)
 	if err != nil {
 		return nil, err
 	}
 
-	chainID := image.Labels()[imageLabelChainID]
-
-	info, err := c.toCRIImageInfo(ctx, chainID, imageSpec, r.GetVerbose())
+	info, err := c.toCRIImageInfo(ctx, image, r.GetVerbose())
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate image info: %w", err)
 	}
@@ -68,15 +61,34 @@ func (c *criService) ImageStatus(ctx context.Context, r *runtime.ImageStatusRequ
 }
 
 // toCRIImage converts internal image object to CRI runtime.Image.
-func toCRIImage(image containerd.Image, imageSpec imagespec.Image) (*runtime.Image, error) {
-	var (
-		labels = image.Labels()
+func (c *criService) toCRIImage(ctx context.Context, image containerd.Image) (*runtime.Image, error) {
+	image, err := c.ensureImageMetadata(ctx, "", "", image)
+	if err != nil {
+		return nil, err
+	}
 
-		imageID    = labels[containerd.ImageLabelConfigDigest]
-		repoTags   = labels[imageLabelRepoTag]
+	imageID, err := image.ID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		labels     = image.Labels()
+		references = []string{image.Name(), imageID}
+		repoTag    = labels[imageLabelRepoTag]
 		repoDigest = labels[imageLabelRepoDigest]
 		imageSize  = labels[imageLabelSize]
+		spec       = labels[imageLabelSpec]
 	)
+
+	if repoTag != "" {
+		references = append(references, repoTag)
+	}
+	if repoDigest != "" {
+		references = append(references, repoDigest)
+	}
+
+	repoTags, repoDigests := parseImageReferences(references)
 
 	size, err := strconv.ParseUint(imageSize, 10, 64)
 	if err != nil {
@@ -85,9 +97,17 @@ func toCRIImage(image containerd.Image, imageSpec imagespec.Image) (*runtime.Ima
 
 	runtimeImage := &runtime.Image{
 		Id:          imageID,
-		RepoTags:    []string{repoTags},
-		RepoDigests: []string{repoDigest},
+		RepoTags:    repoTags,
+		RepoDigests: repoDigests,
 		Size_:       size,
+	}
+
+	var imageSpec imagespec.Image
+
+	if spec != "" {
+		if err := json.Unmarshal([]byte(spec), &imageSpec); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal image spec from label: %w", err)
+		}
 	}
 
 	uid, username := getUserFromImage(imageSpec.Config.User)
@@ -106,12 +126,24 @@ type verboseImageInfo struct {
 }
 
 // toCRIImageInfo converts internal image object information to CRI image status response info map.
-func (c *criService) toCRIImageInfo(ctx context.Context, chainID string, imageSpec imagespec.Image, verbose bool) (map[string]string, error) {
+func (c *criService) toCRIImageInfo(ctx context.Context, image containerd.Image, verbose bool) (map[string]string, error) {
 	if !verbose {
 		return nil, nil
 	}
 
-	info := make(map[string]string)
+	var (
+		labels    = image.Labels()
+		chainID   = labels[imageLabelChainID]
+		info      = make(map[string]string)
+		spec      = labels[imageLabelSpec]
+		imageSpec imagespec.Image
+	)
+
+	if spec != "" {
+		if err := json.Unmarshal([]byte(spec), &imageSpec); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal image spec from label: %w", err)
+		}
+	}
 
 	imi := &verboseImageInfo{
 		ChainID:   chainID,

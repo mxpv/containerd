@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -86,6 +85,8 @@ const (
 	imageLabelChainID = criContainerdPrefix + ".image-chain-id"
 	// imageLabelSize is the label key for image size information.
 	imageLabelSize = criContainerdPrefix + ".image-size"
+	// imageLabelSpec is the label key for OCI image spec.
+	imageLabelSpec = criContainerdPrefix + ".image-spec"
 	// sandboxMetadataExtension is an extension name that identify metadata of sandbox in CreateContainerRequest
 	sandboxMetadataExtension = criContainerdPrefix + ".sandbox.metadata"
 	// containerMetadataExtension is an extension name that identify metadata of container in CreateContainerRequest
@@ -166,42 +167,27 @@ func getRepoDigestAndTag(namedRef docker.Named, digest imagedigest.Digest, schem
 	return repoDigest, repoTag
 }
 
-var hexRegexp = regexp.MustCompile(`^[a-f\d]+$`)
-
 func buildFilters(refOrID string) []string {
 	const (
-		LabelEq       = `labels."%s"=="%s"`
 		LabelContains = `labels."%s"@="%s"`
 		NameContains  = `name@="%s"`
 	)
 
-	// This is a valid digest string
-	// Perform strong match by digest label
-	if _, err := imagedigest.Parse(refOrID); err == nil {
-		return []string{
-			fmt.Sprintf(LabelEq, containerd.ImageLabelConfigDigest, refOrID),
-		}
-	}
-
-	// Short ID lookup
-	if hexRegexp.MatchString(refOrID) {
-		return []string{
-			fmt.Sprintf(LabelContains, containerd.ImageLabelConfigDigest, refOrID),
-		}
-	}
-
-	// Look for by repo tag or digest
-	if normalized, err := docker.ParseDockerRef(refOrID); err == nil {
-		return []string{
-			fmt.Sprintf(LabelEq, imageLabelRepoTag, normalized),
-			fmt.Sprintf(LabelEq, imageLabelRepoDigest, normalized),
-		}
-	}
-
-	// Look by name
-	return []string{
+	filters := []string{
 		fmt.Sprintf(NameContains, refOrID),
+		fmt.Sprintf(LabelContains, containerd.ImageLabelConfigDigest, refOrID),
+		fmt.Sprintf(LabelContains, imageLabelRepoDigest, refOrID),
+		fmt.Sprintf(LabelContains, imageLabelRepoTag, refOrID),
 	}
+
+	if normalized, err := docker.ParseDockerRef(refOrID); err == nil {
+		filters = append(filters, []string{
+			fmt.Sprintf(LabelContains, imageLabelRepoTag, normalized),
+			fmt.Sprintf(LabelContains, imageLabelRepoDigest, normalized),
+		}...)
+	}
+
+	return filters
 }
 
 func (c *criService) findImage(ctx context.Context, refOrID string) (images.Image, error) {
@@ -243,7 +229,9 @@ func (c *criService) findImage(ctx context.Context, refOrID string) (images.Imag
 	return list[0], nil
 }
 
-func (c *criService) getImage(ctx context.Context, refOrID string) (containerd.Image, error) {
+// localResolve resolves image reference locally and returns corresponding image metadata. It
+// returns store.ErrNotExist if the reference doesn't exist.
+func (c *criService) localResolve(ctx context.Context, refOrID string) (containerd.Image, error) {
 	metadata, err := c.findImage(ctx, refOrID)
 	if err != nil {
 		return nil, err
@@ -251,20 +239,10 @@ func (c *criService) getImage(ctx context.Context, refOrID string) (containerd.I
 
 	image, err := c.client.GetImage(ctx, metadata.Name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get image: %w", err)
+		return nil, fmt.Errorf("failed to get image from client: %w", err)
 	}
 
-	if err := c.ensureImageMetadata(ctx, "", "", image); err != nil {
-		return nil, err
-	}
-
-	return image, nil
-}
-
-// localResolve resolves image reference locally and returns corresponding image metadata. It
-// returns store.ErrNotExist if the reference doesn't exist.
-func (c *criService) localResolve(ctx context.Context, refOrID string) (containerd.Image, error) {
-	image, err := c.getImage(ctx, refOrID)
+	image, err = c.ensureImageMetadata(ctx, "", "", image)
 	if err != nil {
 		return nil, err
 	}

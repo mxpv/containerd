@@ -471,8 +471,8 @@ func (c *criService) loadImages(ctx context.Context, cImages []containerd.Image)
 				log.G(ctx).Warnf("The image %s is not unpacked.", i.Name())
 				// TODO(random-liu): Consider whether we should try unpack here.
 			}
-			if err := c.ensureImageMetadata(ctx, "", "", i); err != nil {
-				log.G(ctx).WithError(err).Errorf("failed to update image medata %q: %w", i.Name(), err)
+			if _, err := c.ensureImageMetadata(ctx, "", "", i); err != nil {
+				log.G(ctx).WithError(err).Errorf("failed to update image medata %q", i.Name())
 				return
 			}
 			log.G(ctx).Debugf("Loaded image %q", i.Name())

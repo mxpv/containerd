@@ -87,33 +87,10 @@ func TestContainerdImage(t *testing.T) {
 	require.NoError(t, Eventually(checkImage, 100*time.Millisecond, 10*time.Second))
 	require.NoError(t, Consistently(checkImage, 100*time.Millisecond, time.Second))
 	defer func() {
-		t.Logf("image should still be seen by id if only tag get deleted")
-		if err := containerdClient.ImageService().Delete(ctx, testImage); err != nil {
-			assert.True(t, errdefs.IsNotFound(err), err)
-		}
-		assert.NoError(t, Consistently(func() (bool, error) {
-			img, err := imageService.ImageStatus(&runtime.ImageSpec{Image: id})
-			if err != nil {
-				return false, err
-			}
-			return img != nil, nil
-		}, 100*time.Millisecond, time.Second))
-		t.Logf("image should be removed from the cri plugin if all references get deleted")
-		if err := containerdClient.ImageService().Delete(ctx, id); err != nil {
-			assert.True(t, errdefs.IsNotFound(err), err)
-		}
-		assert.NoError(t, Eventually(func() (bool, error) {
-			img, err := imageService.ImageStatus(&runtime.ImageSpec{Image: id})
-			if err != nil {
-				return false, err
-			}
-			return img == nil, nil
-		}, 100*time.Millisecond, 10*time.Second))
+		t.Logf("image should be removed from the cri plugin")
+		err := containerdClient.ImageService().Delete(ctx, testImage)
+		assert.NoError(t, err)
 	}()
-
-	t.Logf("the image id should be created")
-	_, err = containerdClient.GetImage(ctx, id)
-	assert.NoError(t, err)
 
 	t.Logf("the image should be labeled")
 	img, err := containerdClient.GetImage(ctx, testImage)

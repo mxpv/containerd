@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -100,9 +101,9 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 		return nil, fmt.Errorf("failed to resolve image %q: %w", config.GetImage().GetImage(), err)
 	}
 
-	imageID, ok := containerdImage.Labels()[containerd.ImageLabelConfigDigest]
-	if !ok { // Should never happen
-		return nil, fmt.Errorf("failed to extract id from image %q", config.GetImage().GetImage())
+	imageID, err := containerdImage.ID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image ID: %w", err)
 	}
 
 	start := time.Now()
@@ -142,9 +143,15 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 		}
 	}()
 
-	imageSpec, err := containerdImage.Spec(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve image spec: %w", err)
+	var (
+		imageSpec imagespec.Image
+		labels    = containerdImage.Labels()
+		specLabel = labels[imageLabelSpec]
+	)
+
+	if err := json.Unmarshal([]byte(specLabel), &imageSpec); err != nil {
+		log.G(ctx).WithError(err).Errorf("failed to unmarshal JSON: %q", specLabel)
+		return nil, fmt.Errorf("failed to unmarshal image spec: %w", err)
 	}
 
 	var volumeMounts []*runtime.Mount

@@ -19,22 +19,29 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/containerd/images"
+	"github.com/containerd/containerd/log/logtest"
+	"github.com/containerd/containerd/metadata"
+	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
 	criconfig "github.com/containerd/containerd/pkg/cri/config"
 	containerstore "github.com/containerd/containerd/pkg/cri/store/container"
-	imagestore "github.com/containerd/containerd/pkg/cri/store/image"
 	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/protobuf/types"
 	"github.com/containerd/containerd/reference/docker"
 	"github.com/containerd/containerd/runtime/linux/runctypes"
 	runcoptions "github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/typeurl"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	bolt "go.etcd.io/bbolt"
 
 	imagedigest "github.com/opencontainers/go-digest"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
@@ -162,20 +169,53 @@ func TestParseImageReferences(t *testing.T) {
 	assert.Equal(t, expectedDigests, digests)
 }
 
+func makeTestDB(t *testing.T) (context.Context, *metadata.DB) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = namespaces.WithNamespace(ctx, "testing")
+	ctx = logtest.WithT(ctx, t)
+
+	dirname := t.TempDir()
+
+	db, err := bolt.Open(filepath.Join(dirname, "meta.db"), 0644, nil)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+		cancel()
+	})
+
+	return ctx, metadata.NewDB(db, nil, nil)
+}
+
 func TestLocalResolve(t *testing.T) {
-	image := imagestore.Image{
-		ID:      "sha256:c75bebcdd211f41b3a460c7bf82970ed6c75acaab9cd4c9a4e125b03ca113799",
-		ChainID: "test-chain-id-1",
-		References: []string{
-			"docker.io/library/busybox:latest",
-			"docker.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+	image := images.Image{
+		Name: "test-image",
+		Labels: map[string]string{
+			containerd.ImageLabelConfigDigest: "sha256:c75bebcdd211f41b3a460c7bf82970ed6c75acaab9cd4c9a4e125b03ca113799",
+			imageLabelChainID:                 "test-chain-id-1",
+			imageLabelRepoTag:                 "docker.io/library/busybox:latest",
+			imageLabelRepoDigest:              "docker.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+			imageLabelSize:                    "10",
 		},
-		Size: 10,
+		Target: ocispec.Descriptor{
+			MediaType: "test",
+			Digest:    "sha256:c75bebcdd211f41b3a460c7bf82970ed6c75acaab9cd4c9a4e125b03ca113799",
+			Size:      100000,
+		},
 	}
-	c := newTestCRIService()
-	var err error
-	c.imageStore, err = imagestore.NewFakeStore([]imagestore.Image{image})
-	assert.NoError(t, err)
+
+	var (
+		ctx, db    = makeTestDB(t)
+		imageStore = metadata.NewImageStore(db)
+		c          = newTestCRIService(containerd.WithImageStore(imageStore))
+	)
+
+	image, err := imageStore.Create(ctx, image)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, ref := range []string{
 		"sha256:c75bebcdd211f41b3a460c7bf82970ed6c75acaab9cd4c9a4e125b03ca113799",
@@ -191,14 +231,20 @@ func TestLocalResolve(t *testing.T) {
 		"docker.io/library/busybox",
 		"docker.io/library/busybox:latest",
 		"docker.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+		// Truncated indices
+		"sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
+		"sha256:e6693c20186f837fc393390135d8a",
 	} {
-		img, err := c.localResolve(ref)
-		assert.NoError(t, err)
-		assert.Equal(t, image, img)
+		t.Run(ref, func(t *testing.T) {
+			img, err := c.findImage(ctx, ref)
+			assert.NoError(t, err)
+			assert.Equal(t, image, img)
+		})
 	}
-	img, err := c.localResolve("randomid")
+
+	img, err := c.findImage(ctx, "randomid")
 	assert.Equal(t, errdefs.IsNotFound(err), true)
-	assert.Equal(t, imagestore.Image{}, img)
+	assert.Equal(t, images.Image{}, img)
 }
 
 func TestGenerateRuntimeOptions(t *testing.T) {
