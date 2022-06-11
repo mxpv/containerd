@@ -78,10 +78,6 @@ const (
 	containerKindSandbox = "sandbox"
 	// containerKindContainer is a label value indicating container is application container
 	containerKindContainer = "container"
-	// imageLabelKey is the label key indicating the image is managed by cri plugin.
-	imageLabelKey = criContainerdPrefix + ".image"
-	// imageLabelValue is the label value indicating the image is managed by cri plugin.
-	imageLabelValue = "managed"
 	// imageLabelRepoTag is the label key for repo tag information
 	imageLabelRepoTag = criContainerdPrefix + ".image-repo-tag"
 	// imageLabelRepoDigest is the label key for repo digest information

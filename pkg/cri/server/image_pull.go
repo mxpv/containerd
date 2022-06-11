@@ -142,7 +142,6 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 		containerd.WithResolver(resolver),
 		containerd.WithPullSnapshotter(snapshotter),
 		containerd.WithPullUnpack,
-		containerd.WithPullLabel(imageLabelKey, imageLabelValue),
 		containerd.WithMaxConcurrentDownloads(c.config.MaxConcurrentDownloads),
 		containerd.WithImageHandler(imageHandler),
 		containerd.WithUnpackOpts([]containerd.UnpackOpt{

@@ -111,15 +111,9 @@ func TestContainerdImage(t *testing.T) {
 		}, 100*time.Millisecond, 10*time.Second))
 	}()
 
-	t.Logf("the image should be marked as managed")
-	imgByRef, err := containerdClient.GetImage(ctx, testImage)
+	t.Logf("the image id should be created")
+	_, err = containerdClient.GetImage(ctx, id)
 	assert.NoError(t, err)
-	assert.Equal(t, imgByRef.Labels()["io.cri-containerd.image"], "managed")
-
-	t.Logf("the image id should be created and managed")
-	imgByID, err := containerdClient.GetImage(ctx, id)
-	assert.NoError(t, err)
-	assert.Equal(t, imgByID.Labels()["io.cri-containerd.image"], "managed")
 
 	t.Logf("the image should be labeled")
 	img, err := containerdClient.GetImage(ctx, testImage)
