@@ -21,7 +21,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -188,6 +187,19 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 	return &runtime.PullImageResponse{ImageRef: imageID}, nil
 }
 
+func retrieveImageSpec(ctx context.Context, image containerd.Image) (imagespec.Image, error) {
+	spec, err := image.Spec(ctx)
+	if err != nil {
+		return imagespec.Image{}, fmt.Errorf("failed to get image spec for image %q: %w", image.Name(), err)
+	}
+
+	return spec, nil
+}
+
+// getImageSpec retrieves an image spec from containerd client.
+// This declared as variable for easier unit testing.
+var getImageSpec = retrieveImageSpec
+
 // ensureImageMetadata makes sure image labels contain all labels required by CRI layer (image id,
 // size, chain ID, repo tag, repo digest, etc). This is used by both pull code to populate image with
 // necessary information and well as at daemon start to update old images, so there no need in syncing.
@@ -229,21 +241,6 @@ func (c *criService) ensureImageMetadata(ctx context.Context, repoDigest, repoTa
 		}
 
 		metadata.Labels[imageLabelSize] = strconv.FormatInt(size, 10)
-		update = true
-	}
-
-	if _, ok := metadata.Labels[imageLabelSpec]; !ok {
-		spec, err := image.Spec(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read image spec: %w", err)
-		}
-
-		body, err := json.Marshal(&spec)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal image spec to JSON: %w", err)
-		}
-
-		metadata.Labels[imageLabelSpec] = string(body)
 		update = true
 	}
 

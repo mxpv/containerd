@@ -17,6 +17,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/containerd/containerd"
@@ -44,7 +45,6 @@ func TestListImages(t *testing.T) {
 				imageLabelRepoTag:                 "gcr.io/library/busybox:latest",
 				imageLabelRepoDigest:              "gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
 				imageLabelSize:                    "1000",
-				imageLabelSpec:                    `{"config":{"User":"root"}}`,
 			},
 			Target: fakeTarget,
 		},
@@ -56,7 +56,6 @@ func TestListImages(t *testing.T) {
 				imageLabelRepoTag:                 "gcr.io/library/alpine:latest",
 				imageLabelRepoDigest:              "gcr.io/library/alpine@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
 				imageLabelSize:                    "2000",
-				imageLabelSpec:                    `{"config":{"User":"1234:1234"}}`,
 			},
 			Target: fakeTarget,
 		},
@@ -68,7 +67,6 @@ func TestListImages(t *testing.T) {
 				imageLabelRepoTag:                 "gcr.io/library/ubuntu:latest",
 				imageLabelRepoDigest:              "gcr.io/library/ubuntu@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
 				imageLabelSize:                    "3000",
-				imageLabelSpec:                    `{"config":{"User":"nobody"}}`,
 			},
 			Target: fakeTarget,
 		},
@@ -96,6 +94,21 @@ func TestListImages(t *testing.T) {
 			Username:    "nobody",
 		},
 	}
+
+	getImageSpec = func(ctx context.Context, image containerd.Image) (ocispec.Image, error) {
+		switch image.Name() {
+		case "image-1":
+			return ocispec.Image{Config: ocispec.ImageConfig{User: "root"}}, nil
+		case "image-2":
+			return ocispec.Image{Config: ocispec.ImageConfig{User: "1234:1234"}}, nil
+		case "image-3":
+			return ocispec.Image{Config: ocispec.ImageConfig{User: "nobody"}}, nil
+		default:
+			t.Fatalf("unexpected OCI spec request for image %q", image.Name())
+		}
+		return ocispec.Image{}, nil
+	}
+	t.Cleanup(func() { getImageSpec = retrieveImageSpec })
 
 	var (
 		ctx, db    = makeTestDB(t)

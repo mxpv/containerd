@@ -17,6 +17,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/containerd/containerd"
@@ -44,7 +45,6 @@ func TestImageStatus(t *testing.T) {
 			imageLabelRepoTag:                 "gcr.io/library/busybox:latest",
 			imageLabelRepoDigest:              "gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
 			imageLabelSize:                    "1234",
-			imageLabelSpec:                    `{"config":{"User": "user:group"}}`,
 		},
 		Target: fakeTarget,
 	}
@@ -55,6 +55,11 @@ func TestImageStatus(t *testing.T) {
 		Size_:       uint64(1234),
 		Username:    "user",
 	}
+
+	getImageSpec = func(ctx context.Context, image containerd.Image) (ocispec.Image, error) {
+		return ocispec.Image{Config: ocispec.ImageConfig{User: "user:group"}}, nil
+	}
+	t.Cleanup(func() { getImageSpec = retrieveImageSpec })
 
 	var (
 		ctx, db    = makeTestDB(t)

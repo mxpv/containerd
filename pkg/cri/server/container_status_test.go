@@ -70,7 +70,6 @@ func getContainerStatusTestData() (*containerstore.Metadata, *containerstore.Sta
 			imageLabelRepoDigest:              "gcr.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582",
 			imageLabelChainID:                 "chain-id-1",
 			imageLabelSize:                    "1000",
-			imageLabelSpec:                    "{}",
 		},
 		Target: ocispec.Descriptor{
 			MediaType: "test",

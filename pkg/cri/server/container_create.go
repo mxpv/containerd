@@ -18,7 +18,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -143,15 +142,9 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 		}
 	}()
 
-	var (
-		imageSpec imagespec.Image
-		labels    = containerdImage.Labels()
-		specLabel = labels[imageLabelSpec]
-	)
-
-	if err := json.Unmarshal([]byte(specLabel), &imageSpec); err != nil {
-		log.G(ctx).WithError(err).Errorf("failed to unmarshal JSON: %q", specLabel)
-		return nil, fmt.Errorf("failed to unmarshal image spec: %w", err)
+	imageSpec, err := getImageSpec(ctx, containerdImage)
+	if err != nil {
+		return nil, err
 	}
 
 	var volumeMounts []*runtime.Mount

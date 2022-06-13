@@ -34,7 +34,12 @@ func (c *criService) ListImages(ctx context.Context, r *runtime.ListImagesReques
 
 	var images []*runtime.Image
 	for _, image := range list {
-		image, err := c.toCRIImage(ctx, image)
+		spec, err := getImageSpec(ctx, image)
+		if err != nil {
+			return nil, err
+		}
+
+		image, err := c.toCRIImage(ctx, image, spec)
 		if err != nil {
 			return nil, err
 		}

@@ -85,8 +85,6 @@ const (
 	imageLabelChainID = criContainerdPrefix + ".image-chain-id"
 	// imageLabelSize is the label key for image size information.
 	imageLabelSize = criContainerdPrefix + ".image-size"
-	// imageLabelSpec is the label key for OCI image spec.
-	imageLabelSpec = criContainerdPrefix + ".image-spec"
 	// sandboxMetadataExtension is an extension name that identify metadata of sandbox in CreateContainerRequest
 	sandboxMetadataExtension = criContainerdPrefix + ".sandbox.metadata"
 	// containerMetadataExtension is an extension name that identify metadata of container in CreateContainerRequest
