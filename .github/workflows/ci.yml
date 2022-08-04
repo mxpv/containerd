@@ -84,12 +84,6 @@ jobs:
         with:
           path: src/github.com/containerd/containerd
 
-      - name: Set env
-        shell: bash
-        run: |
-          echo "GOPATH=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
-
       - name: Install protobuf
         run: |
           sudo -E PATH=$PATH script/setup/install-protobuf
