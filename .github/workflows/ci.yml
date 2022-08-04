@@ -71,10 +71,6 @@ jobs:
     runs-on: ubuntu-18.04
     timeout-minutes: 5
 
-    defaults:
-      run:
-        working-directory: src/github.com/containerd/containerd
-
     steps:
       - uses: actions/setup-go@v2
         with:
@@ -214,22 +210,11 @@ jobs:
       - uses: actions/setup-go@v2
         with:
           go-version: ${{ matrix.go-version }}
-
-      - name: Set env
-        shell: bash
-        run: |
-          echo "GOPATH=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
-
       - uses: actions/checkout@v2
-        with:
-          path: src/github.com/containerd/containerd
-
       - name: Make
         run: |
           make build
           make binaries
-        working-directory: src/github.com/containerd/containerd
 
   #
   # Integration and CRI tests
