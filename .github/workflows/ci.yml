@@ -237,21 +237,11 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
 
-      - name: Set env
-        shell: bash
-        run: |
-          echo "GOPATH=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
-
       - uses: actions/checkout@v3
-        with:
-          path: src/github.com/containerd/containerd
 
-      - name: Make
-        run: |
+      - run: |
           make build
           make binaries
-        working-directory: src/github.com/containerd/containerd
 
   #
   # Integration and CRI tests
