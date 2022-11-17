@@ -54,8 +54,6 @@ const (
 	containerKindSandbox = "sandbox"
 	// sandboxMetadataExtension is an extension name that identify metadata of sandbox in CreateContainerRequest
 	sandboxMetadataExtension = criContainerdPrefix + ".sandbox.metadata"
-	// runtimeRunhcsV1 is the runtime type for runhcs.
-	runtimeRunhcsV1 = "io.containerd.runhcs.v1"
 )
 
 const (
