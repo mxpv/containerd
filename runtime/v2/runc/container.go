@@ -52,11 +52,16 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		return nil, fmt.Errorf("create namespace: %w", err)
 	}
 
-	v, err := GetOptions()
-	if err != nil {
-		return nil, err
+	opts := &options.Options{}
+	if r.Options.GetValue() != nil {
+		v, err := typeurl.UnmarshalAny(r.Options)
+		if err != nil {
+			return nil, err
+		}
+		if v != nil {
+			opts = v.(*options.Options)
+		}
 	}
-	opts := v.(*options.Options)
 
 	var mounts []process.Mount
 	for _, m := range r.Rootfs {
@@ -205,7 +210,7 @@ func GetOptions() (interface{}, error) {
 	}
 
 	if len(data) == 0 {
-		return nil, fmt.Errorf("runc options are empty: %w", errdefs.ErrInvalidArgument)
+		return nil, fmt.Errorf("runc options are empty: %w", errdefs.ErrUnavailable)
 	}
 
 	var any ptypes.Any

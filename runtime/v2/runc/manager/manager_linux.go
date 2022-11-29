@@ -133,14 +133,18 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 		}
 	}
 
-	v, err := runc.GetOptions()
-	if err != nil {
-		return "", err
-	}
+	config := &options.Options{}
 
-	config, ok := v.(*options.Options)
-	if !ok {
-		return "", fmt.Errorf("invalid configuration object: %w", errdefs.ErrInvalidArgument)
+	// runc options are optional and may not be passed from integration tests.
+	v, err := runc.GetOptions()
+	if err != nil && !errdefs.IsUnavailable(err) {
+		return "", fmt.Errorf("failed to get runc options: %w", err)
+	} else if err == nil {
+		var ok bool
+		config, ok = v.(*options.Options)
+		if !ok {
+			return "", fmt.Errorf("invalid runc options type: %+v", v)
+		}
 	}
 
 	socketPath := opts.Address
