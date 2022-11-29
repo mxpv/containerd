@@ -147,15 +147,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ str
 		}
 	}
 
-	socketPath := opts.Address
-
-	// Allow custom runc root.
-	// See https://github.com/containerd/containerd/issues/5096
-	if config.Root != "" {
-		socketPath = filepath.Join(config.Root, opts.Address)
-	}
-
-	address, err := shim.SocketAddress(ctx, socketPath, grouping)
+	address, err := shim.SocketAddress(ctx, config.Root, opts.Address, grouping)
 	if err != nil {
 		return "", err
 	}

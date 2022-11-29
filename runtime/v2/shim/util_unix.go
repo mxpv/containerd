@@ -63,22 +63,21 @@ func AdjustOOMScore(pid int) error {
 	return nil
 }
 
-const socketRoot = defaults.DefaultStateDir
+const defaultSocketRoot = defaults.DefaultStateDir
 
 // SocketAddress returns a socket address
-func SocketAddress(ctx context.Context, socketPath, id string) (string, error) {
+func SocketAddress(ctx context.Context, socketRoot, socketPath, id string) (string, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	root := filepath.Join(socketRoot, "s")
-	if filepath.IsAbs(socketPath) {
-		root = socketPath
+	if socketRoot == "" {
+		socketRoot = defaultSocketRoot
 	}
 
 	d := sha256.Sum256([]byte(filepath.Join(socketPath, ns, id)))
-	return fmt.Sprintf("unix://%s/%x", root, d), nil
+	return fmt.Sprintf("unix://%s/%x", filepath.Join(socketRoot, "s"), d), nil
 }
 
 // AnonDialer returns a dialer for a socket
