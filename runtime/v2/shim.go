@@ -341,10 +341,6 @@ func (s *shimTask) delete(ctx context.Context, sandboxed bool, removeTask func(c
 }
 
 func (s *shimTask) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Task, error) {
-	topts := opts.TaskOptions
-	if topts == nil || topts.GetValue() == nil {
-		topts = opts.RuntimeOptions
-	}
 	request := &task.CreateTaskRequest{
 		ID:         s.ID(),
 		Bundle:     s.Bundle(),
@@ -353,7 +349,7 @@ func (s *shimTask) Create(ctx context.Context, opts runtime.CreateOpts) (runtime
 		Stderr:     opts.IO.Stderr,
 		Terminal:   opts.IO.Terminal,
 		Checkpoint: opts.Checkpoint,
-		Options:    protobuf.FromAny(topts),
+		Options:    protobuf.FromAny(opts.TaskOptions),
 	}
 	for _, m := range opts.Rootfs {
 		request.Rootfs = append(request.Rootfs, &types.Mount{

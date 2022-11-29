@@ -248,11 +248,6 @@ func (m *ShimManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 		return nil, err
 	}
 
-	topts := opts.TaskOptions
-	if topts == nil || topts.GetValue() == nil {
-		topts = opts.RuntimeOptions
-	}
-
 	runtimePath, err := m.resolveRuntimePath(opts.Runtime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve runtime path: %w", err)
@@ -264,7 +259,7 @@ func (m *ShimManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 		ttrpcAddress: m.containerdTTRPCAddress,
 		schedCore:    m.schedCore,
 	})
-	shim, err := b.Start(ctx, protobuf.FromAny(topts), func() {
+	shim, err := b.Start(ctx, protobuf.FromAny(opts.RuntimeOptions), func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
 		cleanupAfterDeadShim(context.Background(), id, ns, m.shims, m.events, b)

@@ -425,7 +425,7 @@ func getRuntimeOptions(context *cli.Context) (interface{}, error) {
 
 	if configPath := context.String("runtime-config-path"); configPath != "" {
 		return &runtimeoptions.Options{
-			ConfigPath: configPath,
+			Source: &runtimeoptions.Options_ConfigPath{ConfigPath: configPath},
 		}, nil
 	}
 

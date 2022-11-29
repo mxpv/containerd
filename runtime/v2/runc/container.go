@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,6 +38,8 @@ import (
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/pkg/process"
 	"github.com/containerd/containerd/pkg/stdio"
+	"github.com/containerd/containerd/protobuf/proto"
+	ptypes "github.com/containerd/containerd/protobuf/types"
 	"github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/typeurl"
 	"github.com/sirupsen/logrus"
@@ -49,16 +52,11 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		return nil, fmt.Errorf("create namespace: %w", err)
 	}
 
-	opts := &options.Options{}
-	if r.Options.GetValue() != nil {
-		v, err := typeurl.UnmarshalAny(r.Options)
-		if err != nil {
-			return nil, err
-		}
-		if v != nil {
-			opts = v.(*options.Options)
-		}
+	v, err := GetOptions()
+	if err != nil {
+		return nil, err
 	}
+	opts := v.(*options.Options)
 
 	var mounts []process.Mount
 	for _, m := range r.Rootfs {
@@ -106,6 +104,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 			}
 		}
 	}()
+
 	for _, rm := range mounts {
 		m := &mount.Mount{
 			Type:    rm.Type,
@@ -195,6 +194,31 @@ func WriteOptions(path string, opts *options.Options) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(path, optionsFilename), data, 0600)
+}
+
+// GetOptions retrieves runc configuration from stdin.
+// Provided type must be registered with `typeurl`.
+func GetOptions() (interface{}, error) {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read runc options from stdin")
+	}
+
+	if len(data) == 0 {
+		return nil, fmt.Errorf("runc options are empty: %w", errdefs.ErrInvalidArgument)
+	}
+
+	var any ptypes.Any
+	if err := proto.Unmarshal(data, &any); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal runc options proto: %w", err)
+	}
+
+	v, err := typeurl.UnmarshalAny(&any)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal any: %w", err)
+	}
+
+	return v, nil
 }
 
 // ReadRuntime reads the runtime information from the path

@@ -344,10 +344,26 @@ func generateRuntimeOptions(r criconfig.Runtime, c criconfig.Config) (interface{
 	if err != nil {
 		return nil, err
 	}
+
 	options := getRuntimeOptionsType(r.Type)
+
+	// getRuntimeOptionsType hard-codes the list of possible runtime options, so it's not possible to pass
+	// options to a runtime not known by containerd (except specifying disk path).
+	// For this case, serialize TOML fields to a binary blob and pass it down to the underlying runtime directly.
+	if config, ok := options.(*runtimeoptions.Options); ok {
+		blob, err := optionsTree.Marshal()
+		if err != nil {
+			return nil, err
+		}
+		config.Source = &runtimeoptions.Options_Blob{Blob: blob}
+		return config, nil
+	}
+
+	// Otherwise just unmarshal TOML fields to known structure.
 	if err := optionsTree.Unmarshal(options); err != nil {
 		return nil, err
 	}
+
 	return options, nil
 }
 

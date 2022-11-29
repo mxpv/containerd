@@ -8,7 +8,11 @@ option go_package = "github.com/containerd/containerd/pkg/runtimeoptions/v1;runt
 message Options {
 	// TypeUrl specifies the type of the content inside the config file.
 	string type_url = 1;
-	// ConfigPath specifies the filesystem location of the config file
-	// used by the runtime.
-	string config_path = 2;
+	oneof source {
+		// ConfigPath specifies the filesystem location of the config file
+		// used by the runtime.
+		string config_path = 2;
+		// Blob is an array of bytes passed directly from contaienrd's TOML config file.
+		bytes blob = 3;
+	}
 }
