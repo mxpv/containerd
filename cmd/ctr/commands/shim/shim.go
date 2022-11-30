@@ -242,7 +242,7 @@ func getTaskService(context *cli.Context) (task.TaskService, error) {
 	s1 := filepath.Join(string(filepath.Separator), "containerd-shim", ns, id, "shim.sock")
 	// this should not error, ctr always get a default ns
 	ctx := namespaces.WithNamespace(gocontext.Background(), ns)
-	s2, _ := shim.SocketAddress(ctx, context.GlobalString("address"), id)
+	s2, _ := shim.SocketAddress(ctx, "", context.GlobalString("address"), id)
 	s2 = strings.TrimPrefix(s2, "unix://")
 
 	for _, socket := range []string{s2, "\x00" + s1} {

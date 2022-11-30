@@ -135,7 +135,7 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 	if err != nil {
 		return "", err
 	}
-	address, err := shim.SocketAddress(ctx, opts.Address, opts.ID)
+	address, err := shim.SocketAddress(ctx, "", opts.Address, opts.ID)
 	if err != nil {
 		return "", err
 	}
