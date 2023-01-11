@@ -31,9 +31,8 @@ import (
 	"github.com/sirupsen/logrus"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
-	eventtypes "github.com/containerd/containerd/api/events"
+	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/pkg/cri/sbserver/podsandbox"
-	"github.com/containerd/containerd/protobuf"
 	sb "github.com/containerd/containerd/sandbox"
 
 	"github.com/containerd/containerd/log"
@@ -86,8 +85,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 	}()
 
 	var (
-		err         error
-		sandboxInfo = sb.Sandbox{ID: id}
+		err error
 	)
 
 	ociRuntime, err := c.getSandboxRuntime(config, r.GetRuntimeHandler())
@@ -95,23 +93,11 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		return nil, fmt.Errorf("unable to get OCI runtime for sandbox %q: %w", id, err)
 	}
 
-	sandboxInfo.Runtime.Name = ociRuntime.Type
-
 	// Retrieve runtime options
 	runtimeOpts, err := generateRuntimeOptions(ociRuntime, c.config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate sandbox runtime options: %w", err)
 	}
-
-	if runtimeOpts != nil {
-		sandboxInfo.Runtime.Options, err = typeurl.MarshalAny(runtimeOpts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal runtime options: %w", err)
-		}
-	}
-
-	// Save sandbox name
-	sandboxInfo.AddLabel("name", name)
 
 	// Create initial internal sandbox object.
 	sandbox := sandboxstore.NewSandbox(
@@ -125,15 +111,6 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 			State: sandboxstore.StateUnknown,
 		},
 	)
-
-	if _, err := c.client.SandboxStore().Create(ctx, sandboxInfo); err != nil {
-		return nil, fmt.Errorf("failed to save sandbox metadata: %w", err)
-	}
-	defer func() {
-		if retErr != nil && cleanupErr == nil {
-			cleanupErr = c.client.SandboxStore().Delete(ctx, id)
-		}
-	}()
 
 	defer func() {
 		// Put the sandbox into sandbox store when some resources fail to be cleaned.
@@ -173,14 +150,6 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 			}
 		}()
 
-		if err := sandboxInfo.AddExtension(podsandbox.MetadataKey, &sandbox.Metadata); err != nil {
-			return nil, fmt.Errorf("unable to save sandbox %q to store: %w", id, err)
-		}
-		// Save sandbox metadata to store
-		if sandboxInfo, err = c.client.SandboxStore().Update(ctx, sandboxInfo, "extensions"); err != nil {
-			return nil, fmt.Errorf("unable to update extensions for sandbox %q: %w", id, err)
-		}
-
 		// Define this defer to teardownPodNetwork prior to the setupPodNetwork function call.
 		// This is because in setupPodNetwork the resource is allocated even if it returns error, unlike other resource
 		// creation functions.
@@ -211,33 +180,32 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		sandboxCreateNetworkTimer.UpdateSince(netStart)
 	}
 
-	if err := sandboxInfo.AddExtension(podsandbox.MetadataKey, &sandbox.Metadata); err != nil {
-		return nil, fmt.Errorf("unable to save sandbox %q to store: %w", id, err)
-	}
+	runtimeStart := time.Now()
 
-	controller, err := c.getSandboxController(config, r.GetRuntimeHandler())
+	customController, err := c.getSandboxController(config, r.GetRuntimeHandler())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sandbox controller: %w", err)
 	}
 
-	// Save sandbox metadata to store
-	if sandboxInfo, err = c.client.SandboxStore().Update(ctx, sandboxInfo, "extensions"); err != nil {
-		return nil, fmt.Errorf("unable to update extensions for sandbox %q: %w", id, err)
-	}
+	newSandbox, err := c.client.NewSandbox(ctx, id,
+		containerd.WithSandboxLabel("name", name),
+		containerd.WithSandboxRuntime(ociRuntime.Type, runtimeOpts),
+		containerd.WithSandboxExtension(podsandbox.MetadataKey, &sandbox.Metadata),
+		containerd.WithCustomSandboxController(customController),
+	)
 
-	runtimeStart := time.Now()
-
-	if err := controller.Create(ctx, id); err != nil {
-		return nil, fmt.Errorf("failed to create sandbox %q: %w", id, err)
-	}
-
-	resp, err := controller.Start(ctx, id)
 	if err != nil {
-		sandbox.Container, _ = c.client.LoadContainer(ctx, id)
-		if resp != nil && resp.SandboxID == "" && resp.Pid == 0 && resp.CreatedAt == nil && len(resp.Labels) == 0 {
-			// if resp is a non-nil zero-value, an error occurred during cleanup
-			cleanupErr = fmt.Errorf("failed to cleanup sandbox")
+		return nil, fmt.Errorf("failed to create sandbox %q object: %w", id, err)
+	}
+
+	defer func() {
+		if retErr != nil && cleanupErr == nil {
+			cleanupErr = newSandbox.Shutdown(ctx)
 		}
+	}()
+
+	sandboxPid, err := newSandbox.Start(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("failed to start sandbox %q: %w", id, err)
 	}
 
@@ -247,21 +215,22 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		if err != nil {
 			return nil, fmt.Errorf("failed to load container %q for sandbox: %w", id, err)
 		}
+
 		sandbox.Container = container
-	}
 
-	labels := resp.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
+		spec, err := container.Spec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get sandbox container spec: %w", err)
+		}
 
-	sandbox.ProcessLabel = labels["selinux_label"]
+		sandbox.ProcessLabel = spec.Process.SelinuxLabel
+	}
 
 	if err := sandbox.Status.Update(func(status sandboxstore.Status) (sandboxstore.Status, error) {
 		// Set the pod sandbox as ready after successfully start sandbox container.
-		status.Pid = resp.Pid
+		status.Pid = sandboxPid
 		status.State = sandboxstore.StateReady
-		status.CreatedAt = protobuf.FromTimestamp(resp.CreatedAt)
+		status.CreatedAt = newSandbox.Metadata().CreatedAt
 		return status, nil
 	}); err != nil {
 		return nil, fmt.Errorf("failed to update sandbox status: %w", err)
@@ -277,33 +246,22 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 	// SandboxStatus from the store and include it in the event.
 	c.generateAndSendContainerEvent(ctx, id, id, runtime.ContainerEventType_CONTAINER_CREATED_EVENT)
 
+	exitCh, err := newSandbox.Wait(ctrdutil.NamespacedContext())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get exit channel for sandbox %q: %w", id, err)
+	}
+
 	// start the monitor after adding sandbox into the store, this ensures
 	// that sandbox is in the store, when event monitor receives the TaskExit event.
 	//
 	// TaskOOM from containerd may come before sandbox is added to store,
 	// but we don't care about sandbox TaskOOM right now, so it is fine.
-	go func() {
-		resp, err := controller.Wait(ctrdutil.NamespacedContext(), id)
-		if err != nil {
-			log.G(ctx).WithError(err).Error("failed to wait for sandbox controller, skipping exit event")
-			return
-		}
-
-		e := &eventtypes.TaskExit{
-			ContainerID: id,
-			ID:          id,
-			// Pid is not used
-			Pid:        0,
-			ExitStatus: resp.ExitStatus,
-			ExitedAt:   resp.ExitedAt,
-		}
-		c.eventMonitor.backOff.enBackOff(id, e)
-	}()
+	c.eventMonitor.startSandboxExitMonitor(context.Background(), id, sandboxPid, exitCh)
 
 	// Send CONTAINER_STARTED event with ContainerId equal to SandboxId.
 	c.generateAndSendContainerEvent(ctx, id, id, runtime.ContainerEventType_CONTAINER_STARTED_EVENT)
 
-	sandboxRuntimeCreateTimer.WithValues(labels["oci_runtime_type"]).UpdateSince(runtimeStart)
+	sandboxRuntimeCreateTimer.WithValues(ociRuntime.Type).UpdateSince(runtimeStart)
 
 	return &runtime.RunPodSandboxResponse{PodSandboxId: id}, nil
 }

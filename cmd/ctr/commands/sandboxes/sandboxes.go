@@ -22,12 +22,13 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/urfave/cli"
+
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cmd/ctr/commands"
 	"github.com/containerd/containerd/defaults"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/oci"
-	"github.com/urfave/cli"
 )
 
 // Command is a set of subcommands to manage runtimes with sandbox support
@@ -87,7 +88,7 @@ var runCommand = cli.Command{
 			return fmt.Errorf("failed to create new sandbox: %w", err)
 		}
 
-		err = sandbox.Start(ctx)
+		_, err = sandbox.Start(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to start: %w", err)
 		}

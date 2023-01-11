@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc"
+
 	runtimeAPI "github.com/containerd/containerd/api/runtime/sandbox/v1"
 	api "github.com/containerd/containerd/api/services/sandbox/v1"
 	"github.com/containerd/containerd/errdefs"
@@ -30,7 +32,6 @@ import (
 	v2 "github.com/containerd/containerd/runtime/v2"
 	"github.com/containerd/containerd/sandbox"
 	"github.com/containerd/containerd/services"
-	"google.golang.org/grpc"
 )
 
 func init() {
@@ -212,7 +213,7 @@ func (c *controllerLocal) Status(ctx context.Context, in *api.ControllerStatusRe
 func (c *controllerLocal) getSandbox(ctx context.Context, id string) (runtimeAPI.SandboxService, error) {
 	shim, err := c.shims.Get(ctx, id)
 	if err != nil {
-		return nil, errdefs.ErrNotFound
+		return nil, errdefs.ToGRPC(fmt.Errorf("sandbox %q not found: %w", id, errdefs.ErrNotFound))
 	}
 
 	svc := runtimeAPI.NewSandboxClient(shim.Client())
