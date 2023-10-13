@@ -40,6 +40,9 @@ type TaskClient interface {
 	Stats(ctx context.Context, in *StatsRequest, opts ...grpc.CallOption) (*StatsResponse, error)
 	Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*ConnectResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Events endpoint will be called by containerd to subscribe for
+	// shim events.
+	Events(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Task_EventsClient, error)
 }
 
 type taskClient struct {
@@ -203,6 +206,38 @@ func (c *taskClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...
 	return out, nil
 }
 
+func (c *taskClient) Events(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Task_EventsClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Task_ServiceDesc.Streams[0], "/containerd.task.v3.Task/Events", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &taskEventsClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type Task_EventsClient interface {
+	Recv() (*TaskEvent, error)
+	grpc.ClientStream
+}
+
+type taskEventsClient struct {
+	grpc.ClientStream
+}
+
+func (x *taskEventsClient) Recv() (*TaskEvent, error) {
+	m := new(TaskEvent)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // TaskServer is the server API for Task service.
 // All implementations must embed UnimplementedTaskServer
 // for forward compatibility
@@ -224,6 +259,9 @@ type TaskServer interface {
 	Stats(context.Context, *StatsRequest) (*StatsResponse, error)
 	Connect(context.Context, *ConnectRequest) (*ConnectResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*emptypb.Empty, error)
+	// Events endpoint will be called by containerd to subscribe for
+	// shim events.
+	Events(*emptypb.Empty, Task_EventsServer) error
 	mustEmbedUnimplementedTaskServer()
 }
 
@@ -281,6 +319,9 @@ func (UnimplementedTaskServer) Connect(context.Context, *ConnectRequest) (*Conne
 }
 func (UnimplementedTaskServer) Shutdown(context.Context, *ShutdownRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Shutdown not implemented")
+}
+func (UnimplementedTaskServer) Events(*emptypb.Empty, Task_EventsServer) error {
+	return status.Errorf(codes.Unimplemented, "method Events not implemented")
 }
 func (UnimplementedTaskServer) mustEmbedUnimplementedTaskServer() {}
 
@@ -601,6 +642,27 @@ func _Task_Shutdown_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Task_Events_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(emptypb.Empty)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(TaskServer).Events(m, &taskEventsServer{stream})
+}
+
+type Task_EventsServer interface {
+	Send(*TaskEvent) error
+	grpc.ServerStream
+}
+
+type taskEventsServer struct {
+	grpc.ServerStream
+}
+
+func (x *taskEventsServer) Send(m *TaskEvent) error {
+	return x.ServerStream.SendMsg(m)
+}
+
 // Task_ServiceDesc is the grpc.ServiceDesc for Task service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -677,6 +739,12 @@ var Task_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Task_Shutdown_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Events",
+			Handler:       _Task_Events_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "github.com/containerd/containerd/api/runtime/task/v3/shim.proto",
 }
