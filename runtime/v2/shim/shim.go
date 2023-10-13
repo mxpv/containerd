@@ -389,7 +389,7 @@ func run(ctx context.Context, manager Manager, name string, config Config) error
 	}
 
 	select {
-	case <-publisher.Done():
+	case <-sd.Done():
 		return nil
 	case <-time.After(5 * time.Second):
 		return errors.New("publisher not closed")
