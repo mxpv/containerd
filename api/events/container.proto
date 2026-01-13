@@ -26,7 +26,7 @@ option (containerd.types.fieldpath_all) = true;
 
 message ContainerCreate {
 	string id = 1;
-	string image = 2;
+	string image = 5;
 	message Runtime {
 		string name = 1;
 		google.protobuf.Any options = 2;
