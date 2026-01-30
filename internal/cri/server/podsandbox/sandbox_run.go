@@ -313,7 +313,6 @@ func (c *Controller) Start(ctx context.Context, id string) (cin sandbox.Controll
 
 	cin.SandboxID = id
 	cin.Pid = task.Pid()
-	pid = task.Pid()
 	cin.CreatedAt = info.CreatedAt
 
 	for k, v := range sandboxLabels {

@@ -202,7 +202,7 @@ func (c *criService) StartContainer(ctx context.Context, r *runtime.StartContain
 	}
 
 	// append endpoint to the options so that task manager can get task api endpoint directly
-	endpoint := sandbox.Endpoint
+	endpoint := sandbox.GetEndpoint()
 	if endpoint.IsValid() {
 		taskOpts = append(taskOpts,
 			containerd.WithTaskAPIEndpoint(endpoint.Address, endpoint.Version))

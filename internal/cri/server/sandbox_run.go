@@ -299,13 +299,6 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 
 	sandbox.Instance = instance
 
-	if instance.Address != "" {
-		sandbox.Endpoint = sandboxstore.Endpoint{
-			Version: instance.Version,
-			Address: instance.Address,
-		}
-	}
-
 	if sandboxInfo, err = c.client.SandboxStore().Update(ctx, sandboxInfo, "extensions"); err != nil {
 		return nil, fmt.Errorf("unable to save sandbox %q to sandbox store: %w", id, err)
 	}

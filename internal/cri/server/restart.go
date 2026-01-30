@@ -54,6 +54,9 @@ import (
 // recover recovers system state from containerd and status checkpoint.
 func (c *criService) recover(ctx context.Context) error {
 	// Recover all sandboxes.
+
+	// TODO: We should not make an assumption that we run podsandbox/ controllers here.
+	// E.g. we should query sandboxes from the store, not pause containers.
 	sandboxes, err := c.client.Containers(ctx, filterLabel(crilabels.ContainerKindLabel, crilabels.ContainerKindSandbox))
 	if err != nil {
 		return fmt.Errorf("failed to list sandbox containers: %w", err)
@@ -149,7 +152,8 @@ func (c *criService) recover(ctx context.Context) error {
 
 		sb := sandboxstore.NewSandbox(metadata, sandboxstore.Status{State: state})
 		sb.Sandboxer = sbx.Sandboxer
-		sb.Endpoint = endpoint
+		sb.Instance.Address = endpoint.Address
+		sb.Instance.Version = endpoint.Version
 
 		// Load network namespace.
 		sb.NetNS = getNetNS(&metadata)
@@ -491,7 +495,7 @@ func (c *criService) createContainerIO(containerID, sandboxID string, config *ru
 	switch ociRuntime.IOType {
 	case criconfig.IOTypeStreaming:
 		containerIO, err = cio.NewContainerIO(containerID,
-			cio.WithStreams(sb.Endpoint.Address, config.GetTty(), config.GetStdin()))
+			cio.WithStreams(sb.Instance.Address, config.GetTty(), config.GetStdin()))
 	default:
 		volatileContainerRootDir := c.getVolatileContainerRootDir(containerID)
 		containerIO, err = cio.NewContainerIO(containerID,

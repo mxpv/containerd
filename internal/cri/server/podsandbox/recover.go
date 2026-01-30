@@ -24,10 +24,11 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
+	"github.com/containerd/typeurl/v2"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	containerd "github.com/containerd/containerd/v2/client"
-	sandbox2 "github.com/containerd/containerd/v2/core/sandbox"
+	sb "github.com/containerd/containerd/v2/core/sandbox"
 	"github.com/containerd/containerd/v2/internal/cri/config"
 	"github.com/containerd/containerd/v2/internal/cri/server/podsandbox/types"
 	sandboxstore "github.com/containerd/containerd/v2/internal/cri/store/sandbox"
@@ -131,7 +132,27 @@ func (c *Controller) RecoverContainer(ctx context.Context, cntr containerd.Conta
 					status.State = sandboxstore.StateReady
 					status.Pid = t.Pid()
 					channel = exitCh
+
+					instance := sb.ControllerInstance{
+						SandboxID: sandbox.ID,
+						Pid:       t.Pid(),
+						CreatedAt: info.CreatedAt,
+						Labels:    info.Labels,
+					}
+
+					spec, err := t.Spec(ctx)
+					if err != nil {
+						return status, channel, fmt.Errorf("failed to get spec for sandbox container %s: %w", sandbox.ID, err)
+					}
+
+					instance.Spec, err = typeurl.MarshalAny(spec)
+					if err != nil {
+						return status, channel, fmt.Errorf("failed to marshal spec for sandbox container %s: %w", sandbox.ID, err)
+					}
+
+					sandbox.Instance = instance
 				}
+
 			} else {
 				// Task is not running. Delete the task and set sandbox state as NOTREADY.
 				if _, err := t.Delete(ctx, containerd.WithProcessKill); err != nil && !errdefs.IsNotFound(err) {
@@ -152,7 +173,7 @@ func (c *Controller) RecoverContainer(ctx context.Context, cntr containerd.Conta
 	if meta != nil {
 		podSandbox.Metadata = *meta
 	}
-	podSandbox.Runtime = sandbox2.RuntimeOpts{
+	podSandbox.Runtime = sb.RuntimeOpts{
 		Name:    info.Runtime.Name,
 		Options: info.Runtime.Options,
 	}

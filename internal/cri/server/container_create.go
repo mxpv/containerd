@@ -383,7 +383,7 @@ func (c *criService) createContainer(r *createContainerRequest) (_ string, retEr
 	switch ociRuntime.IOType {
 	case criconfig.IOTypeStreaming:
 		containerIO, err = cio.NewContainerIO(r.containerID,
-			cio.WithStreams(r.sandbox.Endpoint.Address, r.containerConfig.GetTty(), r.containerConfig.GetStdin()))
+			cio.WithStreams(r.sandbox.Instance.Address, r.containerConfig.GetTty(), r.containerConfig.GetStdin()))
 	default:
 		containerIO, err = cio.NewContainerIO(r.containerID,
 			cio.WithNewFIFOs(volatileContainerRootDir, r.containerConfig.GetTty(), r.containerConfig.GetStdin()))

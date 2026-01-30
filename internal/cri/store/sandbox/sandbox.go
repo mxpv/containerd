@@ -38,6 +38,7 @@ type Sandbox struct {
 	// Sandboxer is the sandbox controller name of the sandbox
 	Sandboxer string
 	// Instance is a running controller instance for this sandbox.
+	// This object is only valid when sandbox is running.
 	Instance sb.ControllerInstance
 	// CNI network namespace client.
 	// For hostnetwork pod, this is always nil;
@@ -47,8 +48,14 @@ type Sandbox struct {
 	*store.StopCh
 	// Stats contains (mutable) stats for the (pause) sandbox container
 	Stats *stats.ContainerStats
-	// Endpoint is the sandbox endpoint, for task or streaming api connection
-	Endpoint Endpoint
+}
+
+// GetEndpoint return sandbox instance endpoint, for taks or streaming api connection
+func (s *Sandbox) GetEndpoint() Endpoint {
+	return Endpoint{
+		Address: s.Instance.Address,
+		Version: s.Instance.Version,
+	}
 }
 
 type Endpoint struct {

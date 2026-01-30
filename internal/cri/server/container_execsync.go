@@ -175,7 +175,7 @@ func (c *criService) execInternal(ctx context.Context, container containerd.Cont
 			}
 			switch ociRuntime.IOType {
 			case config.IOTypeStreaming:
-				execIO, err = cio.NewStreamExecIO(id, sb.Endpoint.Address, opts.tty, opts.stdin != nil)
+				execIO, err = cio.NewStreamExecIO(id, sb.Instance.Address, opts.tty, opts.stdin != nil)
 			default:
 				execIO, err = cio.NewFifoExecIO(id, volatileRootDir, opts.tty, opts.stdin != nil)
 			}
