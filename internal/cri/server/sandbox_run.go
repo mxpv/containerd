@@ -281,7 +281,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		return nil, fmt.Errorf("failed to create sandbox %q: %w", id, err)
 	}
 
-	ctrl, err := c.sandboxService.StartSandbox(ctx, sandbox.Sandboxer, id)
+	instance, err := c.sandboxService.StartSandbox(ctx, sandbox.Sandboxer, id)
 	if err != nil {
 		var cerr podsandbox.CleanupErr
 		if errors.As(err, &cerr) {
@@ -297,10 +297,12 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		return nil, fmt.Errorf("failed to start sandbox %q: %w", id, err)
 	}
 
-	if ctrl.Address != "" {
+	sandbox.Instance = instance
+
+	if instance.Address != "" {
 		sandbox.Endpoint = sandboxstore.Endpoint{
-			Version: ctrl.Version,
-			Address: ctrl.Address,
+			Version: instance.Version,
+			Address: instance.Address,
 		}
 	}
 
@@ -308,16 +310,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		return nil, fmt.Errorf("unable to save sandbox %q to sandbox store: %w", id, err)
 	}
 
-	// TODO: get rid of this. sandbox object should no longer have Container field.
-	if ociRuntime.Sandboxer == string(criconfig.ModePodSandbox) {
-		container, err := c.client.LoadContainer(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load container %q for sandbox: %w", id, err)
-		}
-		sandbox.Container = container
-	}
-
-	labels := ctrl.Labels
+	labels := instance.Labels
 	if labels == nil {
 		labels = map[string]string{}
 	}
@@ -341,9 +334,9 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 
 	if err := sandbox.Status.Update(func(status sandboxstore.Status) (sandboxstore.Status, error) {
 		// Set the pod sandbox as ready after successfully start sandbox container.
-		status.Pid = ctrl.Pid
+		status.Pid = instance.Pid
 		status.State = sandboxstore.StateReady
-		status.CreatedAt = ctrl.CreatedAt
+		status.CreatedAt = instance.CreatedAt
 		return status, nil
 	}); err != nil {
 		return nil, fmt.Errorf("failed to update sandbox status: %w", err)

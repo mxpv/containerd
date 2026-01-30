@@ -301,9 +301,25 @@ func (c *Controller) Start(ctx context.Context, id string) (cin sandbox.Controll
 		return cin, fmt.Errorf("failed to update status of pod sandbox %q: %w", id, err)
 	}
 
+	spec, err = task.Spec(ctx)
+	if err != nil {
+		return cin, fmt.Errorf("failed to get spec for sandbox container %s: %w", id, err)
+	}
+
+	cin.Spec, err = typeurl.MarshalAny(spec)
+	if err != nil {
+		return cin, fmt.Errorf("failed to marshal spec for sandbox container %s: %w", id, err)
+	}
+
 	cin.SandboxID = id
 	cin.Pid = task.Pid()
+	pid = task.Pid()
 	cin.CreatedAt = info.CreatedAt
+
+	for k, v := range sandboxLabels {
+		labels[k] = v
+	}
+
 	cin.Labels = labels
 
 	go func() {

@@ -19,7 +19,7 @@ package sandbox
 import (
 	"sync"
 
-	containerd "github.com/containerd/containerd/v2/client"
+	sb "github.com/containerd/containerd/v2/core/sandbox"
 	"github.com/containerd/containerd/v2/internal/cri/store"
 	"github.com/containerd/containerd/v2/internal/cri/store/label"
 	"github.com/containerd/containerd/v2/internal/cri/store/stats"
@@ -35,10 +35,10 @@ type Sandbox struct {
 	Metadata
 	// Status stores the status of the sandbox.
 	Status StatusStorage
-	// Container is the containerd sandbox container client.
-	Container containerd.Container
 	// Sandboxer is the sandbox controller name of the sandbox
 	Sandboxer string
+	// Instance is a running controller instance for this sandbox.
+	Instance sb.ControllerInstance
 	// CNI network namespace client.
 	// For hostnetwork pod, this is always nil;
 	// For non hostnetwork pod, this should never be nil.
