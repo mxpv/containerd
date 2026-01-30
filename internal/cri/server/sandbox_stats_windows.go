@@ -26,6 +26,7 @@ import (
 	"github.com/Microsoft/hcsshim/hcn"
 	"github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/api/types"
+	criconfig "github.com/containerd/containerd/v2/internal/cri/config"
 	containerstore "github.com/containerd/containerd/v2/internal/cri/store/container"
 	sandboxstore "github.com/containerd/containerd/v2/internal/cri/store/sandbox"
 	"github.com/containerd/containerd/v2/internal/cri/store/stats"
@@ -389,8 +390,19 @@ func (c *criService) saveSandBoxMetrics(sandboxID string, sandboxStats *runtime.
 func (c *criService) getSandboxPidCount(ctx context.Context, sandbox sandboxstore.Sandbox) (uint64, error) {
 	var pidCount uint64
 
+	if sandbox.Sandboxer != string(criconfig.ModePodSandbox) {
+		return 0, nil
+	}
+
+	// TODO: Fetch pause container here for now. This requires larger refactoring,
+	// all stats requests should go to Sandbox's Controller interface.
+	container, err := c.client.LoadContainer(ctx, sandbox.ID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load container %q for sandbox: %w", sandbox.ID, err)
+	}
+
 	// get process count inside PodSandbox for Windows
-	task, err := sandbox.Container.Task(ctx, nil)
+	task, err := container.Task(ctx, nil)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return 0, nil
