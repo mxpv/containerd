@@ -140,6 +140,16 @@ when no active tasks remain.
 `SandboxService.ShutdownSandbox` is independent from `TaskService.Shutdown` and
 shuts down the sandbox instance.
 
+### Optional sandbox updates
+
+`SandboxController.Update` forwards the updated sandbox metadata object to the shim
+via `SandboxService.UpdateSandbox`, together with the fieldpaths that changed. CRI
+uses this path for pod level resource updates (`UpdatePodSandboxResources`), where
+the new resources and overhead travel as a sandbox extension.
+
+Implementing `UpdateSandbox` is optional. A shim that does not support updates
+should return a `NotImplemented` error, which callers are expected to tolerate.
+
 ## Controller Implementations
 
 There are two `Controller` implementations today:
